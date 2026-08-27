@@ -22,19 +22,26 @@ def sample_uniform_range(min_val, max_val):
     return min_val + (max_val - min_val) * random.random()
 
 
-def function_mouse_lick(mouse: Mouse, mouse_session: MouseSessionState, i: int) -> tuple[int, MouseSessionState]:
-    lick = 0 
+def function_mouse_lick(
+    mouse: Mouse,
+    mouse_session: MouseSessionState,
+    i: int,
+    threshold: Optional[float] = None,
+) -> tuple[int, MouseSessionState]:
+    lick = 0
 
-    motivation_t = mouse_session.motivation[i - 1, 0]  
+    motivation_t = mouse_session.motivation[i - 1, 0]
     expectation_t = mouse_session.expectation[i - 1, 0]
 
-    
+
     gamma_noise = np.random.gamma(mouse.noise[0], mouse.noise[1]) * mouse.noise[2]
 
-    
-    p_lick_t = (expectation_t + gamma_noise) * motivation_t
+    # decision gate: V*M - C (reward value * motivation, minus cost of licking)
+    decision_gate = mouse.reward_value * motivation_t - mouse.cost
+    p_lick_t = (expectation_t + gamma_noise) * decision_gate
 
-    if p_lick_t >= mouse.lick_thrs:
+    lick_thrs = mouse.lick_thrs if threshold is None else threshold
+    if p_lick_t >= lick_thrs:
         lick = 1
 
     mouse_session.p_lick[i, 0] = p_lick_t
@@ -84,6 +91,8 @@ def function_update_mouse_state(
         mouse_session.expectation[i:, 0] += update[i:]
         mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
         mouse_session.non_rew_lick_cnt += 1
+    elif reward_t > 0 and mouse_session.lick[i - 1, 0] == 1:
+        mouse_session.non_rew_lick_cnt = 0
 
     if stim_t > 0:
         stim_gain = mouse.exp_update_stim[1]
@@ -97,7 +106,7 @@ def function_update_mouse_state(
         mouse_session.eligibility[i:, 0] += update_elig[i:]
         mouse_session.eligibility = np.clip(mouse_session.eligibility, 0, 1)
 
-    if mouse_session.non_rew_lick_cnt > mouse.learning_nonrew_lick[0]:
+    if mouse_session.non_rew_lick_cnt >= mouse.learning_nonrew_lick[0]:
         old_tau, gain = mouse.exp_update_no_reward
         mouse.exp_update_no_reward = (old_tau + mouse.learning_nonrew_lick[1], gain)
         mouse_session.non_rew_lick_cnt = 0
@@ -143,10 +152,11 @@ def function_wdt_session(
     session_info: SessionBaseInfo,
     lick: int,
     i: int
-) -> tuple[float, float, WDTSesssionState]:
+) -> tuple[float, float, WDTSesssionState, bool]:
     t = i * session_info.resolution
     reward = 0.0
     stim = 0.0
+    new_trial = False
 
 
     if (
@@ -157,6 +167,7 @@ def function_wdt_session(
         wdt_session.last_trial_time = t
         wdt_session.no_lick_wind = sample_uniform_range(*session_param.no_lick_wind)
         wdt_session.iti = sample_uniform_range(*session_param.iti)
+        new_trial = True
 
         trial_type = random.choice(session_param.trial_types)
         stim = trial_type
@@ -180,7 +191,37 @@ def function_wdt_session(
     wdt_session.reward[i, 0] = reward
     wdt_session.stim1[i, 0] = stim
 
-    return reward, stim, wdt_session
+    return reward, stim, wdt_session, new_trial
+
+
+def sample_trial_value_cost(
+    mouse: Mouse,
+    buf_v,
+    buf_c,
+    v_range: tuple[float, float] = (0.01, 1.0),
+    c_range: tuple[float, float] = (0.0, 1.0),
+) -> tuple[float, float, float, float]:
+    """
+    A appeler quand un nouveau trial WDT demarre (new_trial=True).
+    Tire une Value (taille de goutte) et un Cost (distance/difficulte) instantanes
+    pour ce trial, les pousse dans les buffers glissants, et regle
+    mouse.reward_value / mouse.cost sur la moyenne des derniers trials
+    (expected_V, expected_C) utilisee par la fonction de decision.
+
+    Retourne (v_trial, c_trial, expected_v, expected_c) — la valeur brute de
+    ce trial ET la moyenne glissante, pour permettre de tracer les deux.
+    """
+    v_trial = random.uniform(*v_range)
+    c_trial = random.uniform(*c_range)
+    buf_v.append(v_trial)
+    buf_c.append(c_trial)
+
+    expected_v = float(np.mean(buf_v))
+    expected_c = float(np.mean(buf_c))
+    mouse.reward_value = expected_v
+    mouse.cost = expected_c
+
+    return v_trial, c_trial, expected_v, expected_c
 
 
 def function_performance_wdt(
@@ -286,7 +327,7 @@ def simulate_mouse_and_get_session_perf(
         ms = MouseSessionState(); ms.initialize(si.number_bin, mouse.motivation[0], init_expect)
 
         for i in range(1, si.number_bin):
-            r, s, ws = function_wdt_session(wp, ws, si, int(ms.lick[i-1, 0]), i)
+            r, s, ws, _ = function_wdt_session(wp, ws, si, int(ms.lick[i-1, 0]), i)
             _, ms = function_mouse_lick(mouse, ms, i)
             mouse, ms = function_update_mouse_state(mouse, ms, si, i, s, r)
 
@@ -304,7 +345,7 @@ def simulate_mouse_and_get_session_perf(
         ms_test = MouseSessionState(); ms_test.initialize(si.number_bin, mouse.motivation[0], init_expect)
 
         for i in range(1, si.number_bin):
-            r, s, ws_test = function_wdt_session(wp_test, ws_test, si, int(ms_test.lick[i-1, 0]), i)
+            r, s, ws_test, _ = function_wdt_session(wp_test, ws_test, si, int(ms_test.lick[i-1, 0]), i)
             _, ms_test = function_mouse_lick(mouse, ms_test, i)
             mouse, ms_test = function_update_mouse_state(mouse, ms_test, si, i, s, r)
 

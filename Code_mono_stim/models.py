@@ -26,7 +26,8 @@ class SessionBaseInfo:
 @dataclass
 class Mouse:
     noise: tuple = (1.2, 3, 0.07)               # Gamma noise: (shape a, scale b, gain) added to lick drive
-    lick_thrs: float = 1.0                      # threshold: if p_lick >= threshold → emit lick
+    lick_thrs: float = 1.0                      # threshold for Free Licking: if p_lick >= threshold → emit lick
+    lick_thrs_wdt: float = 1.0                  # threshold for WDT sessions (separate scale, e.g. when V/C shrink the gate)
     motivation: tuple = (1.0, 0.003)            # (initial value, loss per reward)
     exp_update_reward: tuple = (2000, 0.2)      # (tau, gain) for expectation update after reward
     exp_update_no_reward: tuple = (4, 0.4)      # (tau, gain) for update after lick without reward
@@ -34,6 +35,9 @@ class Mouse:
     learning_nonrew_lick: tuple = (2, 1)        # (threshold of non-reward licks, tau increment)
     learning_stim: float = 0.015                # learning rate for stimulus gain (scaled by RPE * eligibility)
     tau_eligibility: float = 2.0                # eligibility trace time constant (seconds)
+
+    reward_value: float = 1.0                   # V: value of the reward, gates the decision (V*M - C)
+    cost: float = 0.0                           # C: cost of licking, gates the decision (V*M - C)
 
     noise_adapt_enable: bool = True             # active/désactive la feature
     noise_target_rpe: float = 0.20              # |RPE| "attendu" (0..1)
