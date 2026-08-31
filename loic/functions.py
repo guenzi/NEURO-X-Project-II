@@ -27,18 +27,37 @@ def function_mouse_lick(
     mouse_session: MouseSessionState,
     i: int,
     threshold: Optional[float] = None,
+    decision_slope: Optional[float] = None,
 ) -> tuple[int, MouseSessionState]:
+    """
+    Decision function D:
+        D = [E/(1+e^{A_D.(U-U0)}) + Nd/(1+e^{-A_D.(U-U0)})] . [V.M - C]
+        Mouse licks if D >= threshold.
+
+    Le signe est bien +A_D.(U-U0) sous l'exponentielle de E (poids qui decroit avec U)
+    et -A_D.(U-U0) sous celle de Nd (poids qui croit avec U) : quand l'incertitude U
+    augmente au-dela du point neutre U0, le poids sur le bruit Nd augmente (exploration)
+    et le poids sur l'expectation E diminue (moins d'exploitation). En dessous de U0
+    (souris confiante / naive sans surprise), E domine et le bruit est quasi-nul.
+    """
     lick = 0
 
     motivation_t = mouse_session.motivation[i - 1, 0]
     expectation_t = mouse_session.expectation[i - 1, 0]
+    uncertainty_t = mouse_session.uncertainty[i - 1, 0]
 
+    gamma_noise = np.random.gamma(mouse.noise[0], mouse.noise[1])
 
-    gamma_noise = np.random.gamma(mouse.noise[0], mouse.noise[1]) * mouse.noise[2]
+    A = mouse.decision_slope if decision_slope is None else decision_slope
+    u_rel = uncertainty_t - mouse.uncertainty_offset
+    w_exploit = 1.0 / (1.0 + np.exp(A * u_rel))     # poids de E, decroit avec U
+    w_explore = 1.0 / (1.0 + np.exp(-A * u_rel))    # poids de Nd, croit avec U
+
+    drive = expectation_t * w_exploit + gamma_noise * w_explore
 
     # decision gate: V*M - C (reward value * motivation, minus cost of licking)
     decision_gate = mouse.reward_value * motivation_t - mouse.cost
-    p_lick_t = (expectation_t + gamma_noise) * decision_gate
+    p_lick_t = drive * decision_gate
 
     lick_thrs = mouse.lick_thrs if threshold is None else threshold
     if p_lick_t >= lick_thrs:
@@ -46,7 +65,7 @@ def function_mouse_lick(
 
     mouse_session.p_lick[i, 0] = p_lick_t
     mouse_session.lick[i, 0] = lick
-     
+
     return lick, mouse_session
 
 
@@ -72,6 +91,17 @@ def function_update_mouse_state(
 
     rpe_t = reward_t - mouse_session.expectation[i - 1, 0]
     mouse_session.rpe[i, 0] = rpe_t
+
+    # Uncertainty: U_{t+1} = U_t + A_U*(2*|RPE_t|-1)^3, sur tout evenement saillant
+    # (lick, recompense ou non ; OU reward recu meme sans lick, ex: forced reward) —
+    # aligne avec Expectation, qui se met deja a jour sans condition de lick des qu'il
+    # y a un reward (ligne ~102). Sans cette extension, un forced reward (le plus gros
+    # RPE de toute la session) ne modifiait jamais U puisqu'aucun lick ne l'accompagne.
+    mouse_session.uncertainty[i, 0] = mouse_session.uncertainty[i - 1, 0]
+    if mouse_session.lick[i - 1, 0] == 1 or reward_t > 0:
+        u_prev = mouse_session.uncertainty[i - 1, 0]
+        u_new = u_prev + mouse.uncertainty_gain * (2.0 * abs(rpe_t) - 1.0) ** 3
+        mouse_session.uncertainty[i, 0] = float(np.clip(u_new, 0.0, mouse.uncertainty_max))
 
     if reward_t > 0:
         update = (
@@ -132,8 +162,16 @@ def function_fl_session(
         reward = session_param.reward_size
         fl_session.last_reward_time = t
 
+    # Avant la forced reward (si programmee), un lick spontane n'est jamais recompense :
+    # l'expectation est censee etre a 0, donc il n'y a aucune raison biologique qu'un lick
+    # "au hasard" (bruit) declenche une recompense avant que la souris ait decouvert la tache.
+    reward_eligible = (
+        session_param.forced_reward[0] == 0
+        or t >= session_param.forced_reward[1]
+    )
+
     if lick == 1:
-        if (t - fl_session.last_lick_time) > fl_session.no_lick_wind:
+        if reward_eligible and (t - fl_session.last_lick_time) > fl_session.no_lick_wind:
             fl_session.no_lick_wind = sample_uniform_range(*session_param.no_lick_wind)
             if random.random() <= session_param.reward_prob:
                 reward = session_param.reward_size

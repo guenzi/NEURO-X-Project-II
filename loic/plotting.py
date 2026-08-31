@@ -96,6 +96,7 @@ def plot_traces(time_vect,
     lick   = _to_1d(mouse_session.lick)
     rpe    = _to_1d(mouse_session.rpe)
     motiv  = _to_1d(mouse_session.motivation)
+    uncert = _to_1d(getattr(mouse_session, "uncertainty", None))
     reward = _to_1d(reward_array)
     stim   = _to_1d(stim_array) if stim_array is not None else None
     noise  = _to_1d(noise_trace) if noise_trace is not None else None
@@ -114,6 +115,7 @@ def plot_traces(time_vect,
     lick   = _align(lick)
     rpe    = _align(rpe)
     motiv  = _align(motiv)
+    uncert = _align(uncert)
     reward = _align(reward)
     stim   = _align(stim)
     noise  = _align(noise)
@@ -133,6 +135,9 @@ def plot_traces(time_vect,
 
     rows.append(("plot", time_vect, motiv, "Motivation"))
 
+    if uncert is not None:
+        rows.append(("plot", time_vect, uncert, "Uncertainty"))
+
     # Ajoute le panneau Noise gain si dispo
     if noise is not None:
         rows.append(("plot", time_vect, noise, "Noise gain"))
@@ -147,6 +152,9 @@ def plot_traces(time_vect,
         "Motivation": (0.0, 1.0),
         "RPE": (-1.05, 1.05),
         "Lick": (-0.05, 1.05),
+        # Uncertainty n'a pas de bornes fixes: contrairement aux autres grandeurs,
+        # sa plage reellement atteinte varie beaucoup d'une session a l'autre (souvent
+        # tres inferieure a U_max=1.0) — un axe fixe [0,1] ecraserait la variation utile.
     }
 
     for ax, (kind, x, y, label) in zip(axs, rows):
