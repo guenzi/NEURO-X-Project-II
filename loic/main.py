@@ -65,7 +65,7 @@ random.seed(SEED)   # stdlib
 np.random.seed(SEED)  # NumPy"""
 
 # ------------------------------ Noise modulation (globale) ------------------------------
-USE_SIGMOID_NOISE: bool = True     # on/off pour toutes les sessions
+USE_SIGMOID_NOISE: bool = False    # desactive: l'exploration est desormais pilotee par Uncertainty (U), pas par un gain de bruit adaptatif
 SIG_GAIN_MIN: float   = 0.08       # gmin (borne basse du gain)
 SIG_GAIN_MAX: float   = 0.28       # gmax (borne haute du gain)
 SIG_X0: float         = 0.4        # abscisse du point d'inflexion
@@ -83,23 +83,21 @@ SESSION_NAME = "WDT10"
 
 # ------------------------------ Value / Cost (decision gate: V*M - C) ------------------------------
 REWARD_VALUE = 1.0   # V — laisser a 1.0 pour ne rien changer au comportement actuel
-COST = 0.2           # C — laisser a 0.0 pour ne rien changer au comportement actuel
+COST = 0.25           # C — calibre pour plafonner le HR autour de ~60-70% (litterature: Sippy et al. 60.9%)
 
-VC_VARY: bool = True        # si True: V/C tires aleatoirement a chaque trial WDT (goutte + distance)
+VC_VARY: bool = False       # si True: V/C tires aleatoirement a chaque trial WDT (goutte + distance)
 V_RANGE = (0.5, 1.0)         # taille de la goutte (droplet size), tiree uniformement
 C_RANGE = (0.0, 0.5)         # distance/difficulte du spout, tiree uniformement
 VC_BUFFER_SIZE = 5           # nb de derniers trials moyennes pour expected_V / expected_C
 
-# Seuil de lechage — separe par type de session car l'echelle de decision_gate (V*M-C)
-# differe entre Free Licking (V/C constants) et WDT (V/C variables si VC_VARY=True).
-# Les deux valent 1.0 par defaut: avec V=1, C=0, le comportement est strictement identique a avant.
-LICK_THRS_FL = 1.0
-if VC_VARY:
-    LICK_THRS_WDT = 0.45
-else:
-    LICK_THRS_WDT = 1.0
+# Seuil de lechage — separe par type de session (comme decision_slope/decision_slope_wdt),
+# recalibres empiriquement (grid search) pour: 0 lick spontane en FL avant la forced reward,
+# un relick fiable apres (0/20 echecs sur seeds testees), et un apprentissage WDT progressif
+# sur plusieurs sessions plutot qu'un "tout ou rien".
+LICK_THRS_FL = 0.3
+LICK_THRS_WDT = 0.40
 
-_results_suffix = "VCvary" if VC_VARY else f"V{REWARD_VALUE:g}_C{COST:g}"
+_results_suffix = ("VCvary" if VC_VARY else f"V{REWARD_VALUE:g}_C{COST:g}") + f"_wdtThrs{LICK_THRS_WDT:g}"
 init_results_dir(suffix=_results_suffix)
 
 
@@ -109,17 +107,12 @@ init_results_dir(suffix=_results_suffix)
 session_info = SessionBaseInfo()
 mouse = Mouse(reward_value=REWARD_VALUE, cost=COST, lick_thrs=LICK_THRS_FL, lick_thrs_wdt=LICK_THRS_WDT)
 
-noise_trace_fl1 = np.full((session_info.number_bin, 1), float(mouse.noise[2]), dtype=float)
-noise_trace_fl2 = None
-
-wdt_noise_traces: list[np.ndarray] = []
 wdt_sessions:      list[WDTSesssionState] = []
 wdt_mice:          list[MouseSessionState] = []
 wdt_perfs:         list[np.ndarray] = []
 wdt_labels:        list[str] = [f"WDT{i}" for i in range(1, NUM_WDT + 1)]
 
 # TEST (psycho multi-amp)
-noise_trace_wdt_test = None
 log_session_wdt_test = None
 log_mouse_wdt_test   = None
 log_performance_wdt_test = None
@@ -132,7 +125,6 @@ fl_session = FreeLickingSessionState(); fl_session.initialize(session_info.numbe
 mouse_session = MouseSessionState();    mouse_session.initialize(session_info.number_bin, mouse.motivation[0])
 
 buf_fl1, cnt_fl1 = new_rpe_buffer(SIG_AVG_LICKS)
-noise_trace_fl1[0, 0] = float(mouse.noise[2])
 
 for i in range(1, session_info.number_bin):
     reward_t, stim_t, fl_session = function_fl_session(
@@ -149,7 +141,6 @@ for i in range(1, session_info.number_bin):
         gmin=SIG_GAIN_MIN, gmax=SIG_GAIN_MAX,
         update_every=SIG_UPDATE_EVERY,
     )
-    noise_trace_fl1[i, 0] = float(mouse.noise[2])
 
 log_session_fl1 = fl_session
 log_mouse_fl1   = mouse_session
@@ -162,13 +153,12 @@ fl_params.forced_reward = (0, 0)
 lick_sum   = float(np.sum(log_mouse_fl1.lick))
 reward_sum = float(np.sum(log_session_fl1.reward))
 init_expect = (reward_sum / lick_sum) if lick_sum > 0 else 0.0
+init_uncert = float(log_mouse_fl1.uncertainty[-1, 0])  # U persiste entre sessions (pas de forgetting)
 
 fl_session   = FreeLickingSessionState(); fl_session.initialize(session_info.number_bin, fl_params.no_lick_wind)
-mouse_session = MouseSessionState();      mouse_session.initialize(session_info.number_bin, mouse.motivation[0], init_expect)
+mouse_session = MouseSessionState();      mouse_session.initialize(session_info.number_bin, mouse.motivation[0], init_expect, init_uncert)
 
 buf_fl2, cnt_fl2 = new_rpe_buffer(SIG_AVG_LICKS)
-noise_trace_fl2  = np.full((session_info.number_bin, 1), float(mouse.noise[2]), dtype=float)
-noise_trace_fl2[0, 0] = float(mouse.noise[2])
 
 for i in range(1, session_info.number_bin):
     reward_t, stim_t, fl_session = function_fl_session(
@@ -185,7 +175,6 @@ for i in range(1, session_info.number_bin):
         gmin=SIG_GAIN_MIN, gmax=SIG_GAIN_MAX,
         update_every=SIG_UPDATE_EVERY,
     )
-    noise_trace_fl2[i, 0] = float(mouse.noise[2])
 
 log_session_fl2 = fl_session
 log_mouse_fl2   = mouse_session
@@ -205,13 +194,10 @@ for s_idx in range(1, NUM_WDT + 1):
     lick_sum   = float(np.sum(prev_ms.lick))
     reward_sum = float(np.sum(prev_rw))
     init_expect = (reward_sum / lick_sum) if lick_sum > 0 else 0.0
+    init_uncert = float(prev_ms.uncertainty[-1, 0])  # U persiste entre sessions (pas de forgetting)
 
     wdt_session = WDTSesssionState(); wdt_session.initialize(session_info.number_bin, wdt_params.no_lick_wind, wdt_params.iti)
-    mouse_session = MouseSessionState(); mouse_session.initialize(session_info.number_bin, mouse.motivation[0], init_expect)
-
-    # trace du noise gain pour cette session
-    noise_trace_wdt = np.full((session_info.number_bin, 1), float(mouse.noise[2]), dtype=float)
-    noise_trace_wdt[0, 0] = float(mouse.noise[2])
+    mouse_session = MouseSessionState(); mouse_session.initialize(session_info.number_bin, mouse.motivation[0], init_expect, init_uncert)
 
     buf_wdt, cnt_wdt = new_rpe_buffer(SIG_AVG_LICKS)
     buf_v, buf_c = deque(maxlen=VC_BUFFER_SIZE), deque(maxlen=VC_BUFFER_SIZE)
@@ -232,7 +218,8 @@ for s_idx in range(1, NUM_WDT + 1):
             vc_c.append(c_trial)
             vc_expected_v.append(ev)
             vc_expected_c.append(ec)
-        _, mouse_session = function_mouse_lick(mouse, mouse_session, i, threshold=mouse.lick_thrs_wdt)
+        _, mouse_session = function_mouse_lick(mouse, mouse_session, i, threshold=mouse.lick_thrs_wdt,
+                                                decision_slope=mouse.decision_slope_wdt)
         mouse, mouse_session = function_update_mouse_state(mouse, mouse_session, session_info, i, stim_t, reward_t)
 
         cnt_wdt = online_sigmoid_update(
@@ -243,7 +230,6 @@ for s_idx in range(1, NUM_WDT + 1):
             gmin=SIG_GAIN_MIN, gmax=SIG_GAIN_MAX,
             update_every=SIG_UPDATE_EVERY,
         )
-        noise_trace_wdt[i, 0] = float(mouse.noise[2])
 
     # perf & logs
     perf = function_performance_wdt(
@@ -268,7 +254,6 @@ for s_idx in range(1, NUM_WDT + 1):
     wdt_perfs.append(perf)
     wdt_sessions.append(wdt_session)
     wdt_mice.append(mouse_session)
-    wdt_noise_traces.append(noise_trace_wdt)
     wdt_vc_logs.append({
         "trial_times": vc_trial_times, "v": vc_v, "c": vc_c,
         "expected_v": vc_expected_v, "expected_c": vc_expected_c,
@@ -286,12 +271,10 @@ wdt_test_params.trial_types = WDT_TEST_TYPES[:]
 lick_sum   = float(np.sum(prev_ms.lick))
 reward_sum = float(np.sum(prev_rw))
 init_expect = (reward_sum / lick_sum) if lick_sum > 0 else 0.0
+init_uncert = float(prev_ms.uncertainty[-1, 0])  # U persiste entre sessions (pas de forgetting)
 
 wdt_test_session = WDTSesssionState(); wdt_test_session.initialize(session_info.number_bin, wdt_test_params.no_lick_wind, wdt_test_params.iti)
-wdt_test_mouse   = MouseSessionState(); wdt_test_mouse.initialize(session_info.number_bin, mouse.motivation[0], init_expect)
-
-noise_trace_wdt_test = np.full((session_info.number_bin, 1), float(mouse.noise[2]), dtype=float)
-noise_trace_wdt_test[0, 0] = float(mouse.noise[2])
+wdt_test_mouse   = MouseSessionState(); wdt_test_mouse.initialize(session_info.number_bin, mouse.motivation[0], init_expect, init_uncert)
 
 buf_wdtT, cnt_wdtT = new_rpe_buffer(SIG_AVG_LICKS)
 buf_v_test, buf_c_test = deque(maxlen=VC_BUFFER_SIZE), deque(maxlen=VC_BUFFER_SIZE)
@@ -312,7 +295,8 @@ for i in range(1, session_info.number_bin):
         vc_c_test.append(c_trial)
         vc_expected_v_test.append(ev)
         vc_expected_c_test.append(ec)
-    _, wdt_test_mouse = function_mouse_lick(mouse, wdt_test_mouse, i, threshold=mouse.lick_thrs_wdt)
+    _, wdt_test_mouse = function_mouse_lick(mouse, wdt_test_mouse, i, threshold=mouse.lick_thrs_wdt,
+                                             decision_slope=mouse.decision_slope_wdt)
     mouse, wdt_test_mouse = function_update_mouse_state(mouse, wdt_test_mouse, session_info, i, stim_t, reward_t)
 
     cnt_wdtT = online_sigmoid_update(
@@ -323,7 +307,6 @@ for i in range(1, session_info.number_bin):
         gmin=SIG_GAIN_MIN, gmax=SIG_GAIN_MAX,
         update_every=SIG_UPDATE_EVERY,
     )
-    noise_trace_wdt_test[i, 0] = float(mouse.noise[2])
 
 log_session_wdt_test = wdt_test_session
 log_mouse_wdt_test   = wdt_test_mouse
@@ -339,18 +322,18 @@ log_performance_wdt_test = function_performance_wdt(
 
 if PLOT_TRACES:
     plot_traces(session_info.time_vector, log_mouse_fl1, log_session_fl1.reward,
-                stim_array=None, title="Free Licking — Session 1", noise_trace=noise_trace_fl1,
+                stim_array=None, title="Free Licking — Session 1",
                 save_name="free_licking_1", threshold=mouse.lick_thrs)
     plot_traces(session_info.time_vector, log_mouse_fl2, log_session_fl2.reward,
-                stim_array=None, title="Free Licking — Session 2", noise_trace=noise_trace_fl2,
+                stim_array=None, title="Free Licking — Session 2",
                 save_name="free_licking_2", threshold=mouse.lick_thrs)
     for k, lbl in enumerate(wdt_labels):
         plot_traces(session_info.time_vector, wdt_mice[k], wdt_sessions[k].reward,
                     stim_array=wdt_sessions[k].stim1, title=f"Whisker Detection Task — {lbl}",
-                    noise_trace=wdt_noise_traces[k], save_name=lbl.lower(), threshold=mouse.lick_thrs_wdt)
+                    save_name=lbl.lower(), threshold=mouse.lick_thrs_wdt)
     plot_traces(session_info.time_vector, log_mouse_wdt_test, log_session_wdt_test.reward,
                 stim_array=log_session_wdt_test.stim1, title="WDT Test (multi-amp)",
-                noise_trace=noise_trace_wdt_test, save_name="wdt_test", threshold=mouse.lick_thrs_wdt)
+                save_name="wdt_test", threshold=mouse.lick_thrs_wdt)
 
     if VC_VARY:
         for lbl, vc in zip(wdt_labels, wdt_vc_logs):
@@ -452,13 +435,18 @@ if SAVE_PARAMETERS_TXT:
         ("MOUSE — NOISE & DECISION", None),
         ("Noise gamma shape", _ref_mouse.noise[0]),
         ("Noise gamma scale", _ref_mouse.noise[1]),
-        ("Noise gain (initial)", _ref_mouse.noise[2]),
         ("Lick threshold — Free Licking", LICK_THRS_FL),
         ("Lick threshold — WDT", LICK_THRS_WDT),
 
         ("MOUSE — MOTIVATION", None),
         ("Motivation (initial)", _ref_mouse.motivation[0]),
         ("Motivation loss per reward", _ref_mouse.motivation[1]),
+
+        ("MOUSE — UNCERTAINTY (DECISION BLEND E/Nd)", None),
+        ("Decision slope — Free Licking (A_D)", _ref_mouse.decision_slope),
+        ("Decision slope — WDT (A_D)", _ref_mouse.decision_slope_wdt),
+        ("Uncertainty gain (A_U)", _ref_mouse.uncertainty_gain),
+        ("Uncertainty max (U_max)", _ref_mouse.uncertainty_max),
 
         ("MOUSE — VALUE & COST (DECISION GATE: V·M − C)", None),
         ("Reward value (V)", REWARD_VALUE),
