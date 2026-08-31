@@ -2,6 +2,7 @@
 # Top-level imports and aliases used throughout the simulation script.
 
 import os
+from collections import deque
 import numpy as np                    # array ops, numerical calculations
 import matplotlib
 import matplotlib.pyplot as plt       # plotting utilities
@@ -58,6 +59,7 @@ from functions import (
     new_rpe_buffer,                   # helper to maintain running RPE buffer
     online_sigmoid_update,            # online mapping (expectation -> noise gain)
     extract_rpe_per_lick,             # extract RPEs aligned to lick events
+    sample_trial_value_cost,          # per-trial dynamic V/C (fused from colleague's work)
 )
 
 # Plotting helpers used by the optional visualization switches.
@@ -88,6 +90,16 @@ PLOT_SIGMOID_MAPPING: bool = False      # visualize the sigmoid mapping used for
 # ------------------------------ General settings ------------------------------
 NUM_WDT = 10  # total number of WDT sessions (1..5 reward=stim1; 6..10 reward=stim2)
 
+# ------------------------------ Value / Cost dynamiques (fusion du travail du collègue) ------------------------------
+# En Free Licking, V/C restent statiques (mouse.value=1.0, mouse.cost=0.0, cf. models.py).
+# En WDT, si VC_VARY=True, on tire un V (taille de goutte) et un C (distance/difficulté du
+# spout) à chaque nouveau trial, moyennés sur une fenêtre glissante (comme dans
+# Code_mono_stim/main.py — sample_trial_value_cost).
+VC_VARY: bool = True
+V_RANGE: tuple = (0.5, 1.0)         # taille de la goutte (droplet size), tirée uniformément
+C_RANGE: tuple = (0.0, 0.5)         # distance/difficulté du spout, tirée uniformément
+VC_BUFFER_SIZE: int = 5             # nb de derniers trials moyennés pour expected_V / expected_C
+
 # Optional deterministic RNG seed for reproducible runs.
 """SEED = 80
 random.seed(SEED)
@@ -112,6 +124,7 @@ SIG_UPDATE_EVERY: int = 1         # update noise gain every N bins
 # =============================================================================================
 session_info = SessionBaseInfo()  # base session timing / bin settings
 mouse = Mouse()  # mouse state (motivation, noise, stim gains)
+LICK_THRS_FL_USED = mouse.lick_thrs  # capturé avant que le seuil ne bascule pour les WDT (voir plus bas)
 
 # Noise gain traces (for plotting later if you want)
 noise_trace_fl1 = np.full((session_info.number_bin, 1), float(mouse.noise[2]), dtype=float)  # FL1 trace init
@@ -204,6 +217,9 @@ log_mouse_fl2   = mouse_session
 prev_ms = log_mouse_fl2
 prev_rw = log_session_fl2.reward
 
+# Bascule sur le seuil WDT (échelle différente une fois V/C dynamiques, cf. models.py)
+mouse.lick_thrs = mouse.lick_thrs_wdt
+
 # ================== WDT — logging des gains de stim ==================
 stim_gain_history: list[tuple[float, float]] = []
 print(f"Initial stim gains: stim1={mouse.stim_gain1:.3f}, stim2={mouse.stim_gain2:.3f}")
@@ -228,11 +244,14 @@ for s_idx in range(1, NUM_WDT + 1):
     noise_trace_wdt[0, 0] = float(mouse.noise[2])
 
     buf_wdt, cnt_wdt = new_rpe_buffer(SIG_AVG_LICKS)
+    buf_v, buf_c = deque(maxlen=VC_BUFFER_SIZE), deque(maxlen=VC_BUFFER_SIZE)
 
     for i in range(1, session_info.number_bin):
-        r, s1, s2, wdt_session = function_wdt_session(
+        r, s1, s2, wdt_session, new_trial = function_wdt_session(
             wdt_params, wdt_session, session_info, int(mouse_session.lick[i - 1, 0]), i
         )
+        if VC_VARY and new_trial:
+            sample_trial_value_cost(mouse, buf_v, buf_c, V_RANGE, C_RANGE)
         _, mouse_session = function_mouse_lick(mouse, mouse_session, i)
         mouse, mouse_session = function_update_mouse_state(mouse, mouse_session, session_info, i, s1, s2, r)
 
@@ -285,10 +304,10 @@ for s_idx in range(1, NUM_WDT + 1):
 if PLOT_TRACES:
     plot_traces(session_info.time_vector, log_mouse_fl1, log_session_fl1.reward,
                 stim_array=None, title="Free Licking — Session 1", noise_trace=noise_trace_fl1,
-                lick_threshold=mouse.lick_thrs)
+                lick_threshold=LICK_THRS_FL_USED)
     plot_traces(session_info.time_vector, log_mouse_fl2, log_session_fl2.reward,
                 stim_array=None, title="Free Licking — Session 2", noise_trace=noise_trace_fl2,
-                lick_threshold=mouse.lick_thrs)
+                lick_threshold=LICK_THRS_FL_USED)
     for k, lbl in enumerate(wdt_labels):
         # Visualize both stims on one channel: stim1=1, stim2=2
         stim_vis = wdt_sessions[k].stim1 + 2.0 * wdt_sessions[k].stim2

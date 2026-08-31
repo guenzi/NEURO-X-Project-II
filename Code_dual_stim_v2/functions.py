@@ -211,7 +211,7 @@ def function_wdt_session(
     session_info: SessionBaseInfo,
     lick: int,
     i: int
-) -> Tuple[float, float, float, WDTSesssionState]:
+) -> Tuple[float, float, float, WDTSesssionState, bool]:
     """
     Trials are started when no-lick and ITI constraints are met.
     Each trial kind ∈ {0 (catch), 1 (whisker), 2 (auditory)} sampled ~1/3 each.
@@ -222,6 +222,7 @@ def function_wdt_session(
     reward = 0.0
     s1 = 0.0
     s2 = 0.0
+    new_trial = False
 
     # Start a new trial?
     if (
@@ -232,6 +233,7 @@ def function_wdt_session(
         wdt_session.last_trial_time = t
         wdt_session.no_lick_wind = sample_uniform_range(*session_param.no_lick_wind)
         wdt_session.iti = sample_uniform_range(*session_param.iti)
+        new_trial = True
 
         kind = random.choice(session_param.trial_kinds)  # 0/1/2
         wdt_session.last_trial_kind = int(kind)
@@ -265,7 +267,34 @@ def function_wdt_session(
     if s2 > 0:
         wdt_session.stim2[i, 0] = float(s2)
 
-    return float(reward), float(s1), float(s2), wdt_session
+    return float(reward), float(s1), float(s2), wdt_session, new_trial
+
+
+def sample_trial_value_cost(
+    mouse: Mouse,
+    buf_v,
+    buf_c,
+    v_range: Tuple[float, float] = (0.5, 1.0),
+    c_range: Tuple[float, float] = (0.0, 0.5),
+) -> Tuple[float, float, float, float]:
+    """
+    A appeler quand un nouveau trial WDT démarre (new_trial=True).
+    Tire une Value (taille de goutte) et un Cost (distance/difficulté) instantanés
+    pour ce trial, les pousse dans des buffers glissants, et règle mouse.value /
+    mouse.cost sur la moyenne des derniers trials (expected_V, expected_C) —
+    utilisée par la fonction de décision D = [...] . [V.M - C].
+    """
+    v_trial = random.uniform(*v_range)
+    c_trial = random.uniform(*c_range)
+    buf_v.append(v_trial)
+    buf_c.append(c_trial)
+
+    expected_v = float(np.mean(buf_v))
+    expected_c = float(np.mean(buf_c))
+    mouse.value = expected_v
+    mouse.cost = expected_c
+
+    return v_trial, c_trial, expected_v, expected_c
 
 
 

@@ -32,16 +32,26 @@ class Mouse:
     # Vérifié empiriquement (grid search) : gain=0.022 + seuil=0.35 => 0 lick spontané avant le
     # forced reward de FL1 (sur plusieurs seeds) tout en laissant l'apprentissage WDT démarrer.
     noise: tuple = (1.2, 3, 0.022)              # Gamma noise: (shape a, scale b, gain) — bruit Nd (exploration)
-    lick_thrs: float = 0.35                     # Threshold: la souris lick si D > Threshold
+    lick_thrs: float = 0.35                     # Threshold FL: la souris lick si D > Threshold
+    # Seuil séparé pour les sessions WDT : intégré du travail du collègue (Code_mono_stim/main.py,
+    # LICK_THRS_WDT). Nécessaire car quand V/C varient par trial (moyenne ~0.5 au lieu de 1.0
+    # fixe), l'échelle de [V.M-C] change entre FL (V=1,C=0 statiques) et WDT (V,C dynamiques)
+    # — cf. recalibrage empirique plus bas.
+    # Calibré empiriquement (grid search, V~U(0.5,1.0), C~U(0,0.5)) : meilleur compromis entre
+    # une vraie courbe d'apprentissage progressive (HR ~0.57->0.77 sur WDT1-10, pas un plafond
+    # immédiat) et un FA qui reste non-nul (même faible) en sessions tardives plutôt que de
+    # s'effondrer totalement à 0 comme avec un seuil trop élevé.
+    lick_thrs_wdt: float = 0.12                 # Threshold WDT: la souris lick si D > Threshold_wdt
 
     # --- Decision function D = [E/(1+e^{A.U}) + Nd/(1+e^{-A.U})] . [V.M - C]
     decision_slope: float = 5.0                 # "A" : pente de transition exploitation/exploration (fn de U)
-    # V et C PROVISOIREMENT NEUTRALISÉS (V=1, C=0) en attendant l'implémentation dynamique du
-    # collègue : D se réduit à [E.w_exploit + Nd.w_explore] . M, càd le comportement sans coût
-    # ni valeur, motivation seule. À remettre à V=1 / C=0.8 (valeurs d'init du PDF) dès que les
-    # vraies fonctions Value/Cost seront prêtes.
-    value: float = 1.0                          # V : valeur de l'outcome (neutralisé, cf. implémentation collègue)
-    cost: float = 0.0                           # C : coût de l'action (neutralisé, cf. implémentation collègue)
+    # V et C : fusion avec le travail du collègue (Code_mono_stim/functions.py, sample_trial_value_cost).
+    # Ces deux champs contiennent la valeur COURANTE de V/C : constants (1.0 / 0.0) pendant les
+    # sessions Free Licking, mais réglés dynamiquement à chaque nouveau trial WDT par
+    # sample_trial_value_cost() sur une moyenne glissante des derniers tirages
+    # (V~Uniform(0.5,1.0)=taille de goutte, C~Uniform(0,0.5)=distance/difficulté du spout).
+    value: float = 1.0                          # V : valeur de l'outcome (constant en FL, dynamique en WDT)
+    cost: float = 0.0                           # C : coût de l'action (constant en FL, dynamique en WDT)
     motivation: tuple = (1.0, 0.003)            # (initial value, loss per reward)
     exp_update_reward: tuple = (2000, 0.2)      # (tau, gain) for expectation update after reward
     exp_update_no_reward: tuple = (4, 0.4)      # (tau, gain) for update after lick without reward

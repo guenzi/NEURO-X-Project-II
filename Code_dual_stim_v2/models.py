@@ -28,25 +28,37 @@ class SessionBaseInfo:
 # ======================================================================
 @dataclass
 class Mouse:
-    # Gain recalibré (0.05 -> 0.03) : dans D, Nd n'entre plus qu'à moitié poids (sigmoïde à U=0),
+    # Gain recalibré (0.05 -> 0.018) : dans D, Nd n'entre plus qu'à moitié poids (sigmoïde à U=0),
     # contrairement à l'ancienne formule p_lick=(E+Nd)*M où Nd comptait à plein poids. Sans ce
     # recalibrage, le bruit seul suffisait à dépasser le seuil dès t=0 (souris naïve qui lèche
     # immédiatement) — cf. exigence du PDF "Nd calibré tel qu'une souris naïve ne lèche pas".
-    # Vérifié empiriquement (grid search, 15+ runs) : gain=0.03 + seuil=0.35 => 0 lick spontané
-    # avant le forced reward de FL1 sur la quasi-totalité des seeds, et un apprentissage WDT qui
-    # démarre de façon fiable (le dual-stim a besoin d'un peu plus de bruit que le mono car
-    # l'exploration se partage entre 2 stimuli au lieu d'1 ; à 0.025 quelques runs sur 10
-    # restaient bloqués près de 0% de hit rate).
-    noise: Tuple[float, float, float] = (1.2, 3.0, 0.03)   # (a, b, gain) — bruit Nd (exploration)
-    lick_thrs: float = 0.35                                 # Threshold: la souris lick si D > Threshold
+    # CORRECTIF (2026-08-27) : la valeur précédente (0.03) avait été validée sur un échantillon
+    # trop restreint de runs et se révèle en fait PEU fiable (69-165 licks avant t=500s sur 10
+    # essais rejoués rigoureusement). Regrid-search sur 8 essais : gain=0.03 échoue sur les 8 ;
+    # gain=0.022 échoue sur 2/8 ; gain=0.020 échoue sur 1/8 ; gain=0.018 échoue sur 0/8 (marge de
+    # sécurité). Valeur retenue: 0.018. Le seuil FL a aussi dû être rebaissé (0.35 -> 0.30) car à
+    # 0.35 le boost d'Expectation post-forced-reward (E~0.2) ne suffisait plus à jamais redépasser
+    # le seuil avec le bruit réduit : la souris relichait 0 fois sur le reste de la session dans
+    # ~50% des essais (Free Licking totalement bloquée). Vérifié : gain=0.018+seuil=0.30 => 0/8
+    # échec de quiescence ET 0/8 échec d'apprentissage post-reward (sur 8 essais).
+    noise: Tuple[float, float, float] = (1.2, 3.0, 0.018)  # (a, b, gain) — bruit Nd (exploration)
+    lick_thrs: float = 0.30                                 # Threshold FL: la souris lick si D > Threshold
+    # Seuil séparé pour les sessions WDT, fusionné depuis le travail du collègue
+    # (Code_mono_stim/main.py, LICK_THRS_WDT) : l'échelle de [V.M-C] change entre FL (V=1,C=0
+    # statiques) et WDT (V,C dynamiques, moyenne ~0.5 au lieu de 1.0 fixe) — recalibré empiriquement.
+    # Calibré empiriquement (grid search avec gain=0.018, V~U(0.5,1.0), C~U(0,0.5)) : compromis
+    # entre une courbe d'apprentissage progressive (HR ~0.40->0.79 sur WDT1-5 puis reversal
+    # AUD6-10) et un FA qui reste majoritairement non-nul plutôt que de s'effondrer à 0.
+    lick_thrs_wdt: float = 0.10                             # Threshold WDT: la souris lick si D > Threshold_wdt
 
     # --- Decision function D = [E/(1+e^{A.U}) + Nd/(1+e^{-A.U})] . [V.M - C]
     decision_slope: float = 5.0                 # "A" : pente de transition exploitation/exploration (fn de U)
-    # V et C PROVISOIREMENT NEUTRALISÉS (V=1, C=0) en attendant l'implémentation dynamique du
-    # collègue : D se réduit à [E.w_exploit + Nd.w_explore] . M. À remettre à V=1 / C=0.8
-    # (valeurs d'init du PDF) dès que les vraies fonctions Value/Cost seront prêtes.
-    value: float = 1.0                          # V : valeur de l'outcome (neutralisé, cf. implémentation collègue)
-    cost: float = 0.0                           # C : coût de l'action (neutralisé, cf. implémentation collègue)
+    # V et C : fusion avec le travail du collègue (Code_mono_stim/functions.py, sample_trial_value_cost).
+    # Constants (1.0 / 0.0) en Free Licking ; réglés dynamiquement à chaque nouveau trial WDT par
+    # sample_trial_value_cost() sur une moyenne glissante des derniers tirages
+    # (V~Uniform(0.5,1.0)=taille de goutte, C~Uniform(0,0.5)=distance/difficulté du spout).
+    value: float = 1.0                          # V : valeur de l'outcome (constant en FL, dynamique en WDT)
+    cost: float = 0.0                           # C : coût de l'action (constant en FL, dynamique en WDT)
 
     motivation: Tuple[float, float] = (1.0, 0.003)        # (init, delta par reward)
 

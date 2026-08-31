@@ -1,5 +1,6 @@
 # ============================ SESSION FLOW (2 FL + 10 WDT + PSYCHO) ============================
 import os
+from collections import deque
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
@@ -55,6 +56,7 @@ from functions import (
     online_sigmoid_update,
     extract_rpe_per_lick,
     population_hr_fa_plot,
+    sample_trial_value_cost,
 )
 
 
@@ -107,16 +109,27 @@ PLOT_SIGMOID_MAPPING: bool = False # pour visualiser g(m) avec les params actuel
 
 # ------------------------------ Internal variance ------------------------------
 N_MICE = 10
-NOISE_GAIN = 0.06       
-LEARNING_STIM = 0.02    
+NOISE_GAIN = 0.06
+LEARNING_STIM = 0.02
 SESSION_NAME = "WDT10"
+
+# ------------------------------ Value / Cost dynamiques (fusion du travail du collègue) ------------------------------
+# En Free Licking, V/C restent statiques (mouse.value=1.0, mouse.cost=0.0, cf. models.py).
+# En WDT, si VC_VARY=True, on tire un V (taille de goutte) et un C (distance/difficulté du
+# spout) à chaque nouveau trial, moyennés sur une fenêtre glissante (comme dans
+# Code_mono_stim/main.py — sample_trial_value_cost).
+VC_VARY: bool = True
+V_RANGE: tuple = (0.5, 1.0)         # taille de la goutte (droplet size), tirée uniformément
+C_RANGE: tuple = (0.0, 0.5)         # distance/difficulté du spout, tirée uniformément
+VC_BUFFER_SIZE: int = 5             # nb de derniers trials moyennés pour expected_V / expected_C
 
 
 # =============================================================================================
 #                                   INITIALISATION GLOBALE
 # =============================================================================================
 session_info = SessionBaseInfo()
-mouse = Mouse()  
+mouse = Mouse()
+LICK_THRS_FL_USED = mouse.lick_thrs  # capturé avant que le seuil ne soit basculé pour les WDT (voir plus bas)
 
 noise_trace_fl1 = np.full((session_info.number_bin, 1), float(mouse.noise[2]), dtype=float)
 noise_trace_fl2 = None
@@ -206,6 +219,9 @@ log_mouse_fl2   = mouse_session
 prev_ms = log_mouse_fl2
 prev_rw = log_session_fl2.reward
 
+# Bascule sur le seuil WDT (échelle différente une fois V/C dynamiques, cf. models.py)
+mouse.lick_thrs = mouse.lick_thrs_wdt
+
 for s_idx in range(1, NUM_WDT + 1):
     wdt_params = WDTSesssionParams()
     wdt_params.trial_types = DEFAULT_TYPES[:]  # binaire (0 vs 1)
@@ -223,11 +239,14 @@ for s_idx in range(1, NUM_WDT + 1):
     noise_trace_wdt[0, 0] = float(mouse.noise[2])
 
     buf_wdt, cnt_wdt = new_rpe_buffer(SIG_AVG_LICKS)
+    buf_v, buf_c = deque(maxlen=VC_BUFFER_SIZE), deque(maxlen=VC_BUFFER_SIZE)
 
     for i in range(1, session_info.number_bin):
-        reward_t, stim_t, wdt_session = function_wdt_session(
+        reward_t, stim_t, wdt_session, new_trial = function_wdt_session(
             wdt_params, wdt_session, session_info, int(mouse_session.lick[i - 1, 0]), i
         )
+        if VC_VARY and new_trial:
+            sample_trial_value_cost(mouse, buf_v, buf_c, V_RANGE, C_RANGE)
         _, mouse_session = function_mouse_lick(mouse, mouse_session, i)
         mouse, mouse_session = function_update_mouse_state(mouse, mouse_session, session_info, i, stim_t, reward_t)
 
@@ -287,11 +306,14 @@ noise_trace_wdt_test = np.full((session_info.number_bin, 1), float(mouse.noise[2
 noise_trace_wdt_test[0, 0] = float(mouse.noise[2])
 
 buf_wdtT, cnt_wdtT = new_rpe_buffer(SIG_AVG_LICKS)
+buf_v_test, buf_c_test = deque(maxlen=VC_BUFFER_SIZE), deque(maxlen=VC_BUFFER_SIZE)
 
 for i in range(1, session_info.number_bin):
-    reward_t, stim_t, wdt_test_session = function_wdt_session(
+    reward_t, stim_t, wdt_test_session, new_trial = function_wdt_session(
         wdt_test_params, wdt_test_session, session_info, int(wdt_test_mouse.lick[i - 1, 0]), i
     )
+    if VC_VARY and new_trial:
+        sample_trial_value_cost(mouse, buf_v_test, buf_c_test, V_RANGE, C_RANGE)
     _, wdt_test_mouse = function_mouse_lick(mouse, wdt_test_mouse, i)
     mouse, wdt_test_mouse = function_update_mouse_state(mouse, wdt_test_mouse, session_info, i, stim_t, reward_t)
 
@@ -320,10 +342,10 @@ log_performance_wdt_test = function_performance_wdt(
 if PLOT_TRACES:
     plot_traces(session_info.time_vector, log_mouse_fl1, log_session_fl1.reward,
                 stim_array=None, title="Free Licking — Session 1", noise_trace=noise_trace_fl1,
-                lick_threshold=mouse.lick_thrs)
+                lick_threshold=LICK_THRS_FL_USED)
     plot_traces(session_info.time_vector, log_mouse_fl2, log_session_fl2.reward,
                 stim_array=None, title="Free Licking — Session 2", noise_trace=noise_trace_fl2,
-                lick_threshold=mouse.lick_thrs)
+                lick_threshold=LICK_THRS_FL_USED)
     for k, lbl in enumerate(wdt_labels):
         plot_traces(session_info.time_vector, wdt_mice[k], wdt_sessions[k].reward,
                     stim_array=wdt_sessions[k].stim1, title=f"Whisker Detection Task — {lbl}",
