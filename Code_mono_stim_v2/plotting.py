@@ -1,10 +1,63 @@
 # plotting.py
 from __future__ import annotations
 
+import os
+from datetime import datetime
+
 import numpy as np
 import matplotlib.pyplot as plt
 from statistics import NormalDist
 from typing import Optional, Iterable, Tuple, List
+
+
+# =====================================================================
+# Sauvegarde des figures (au lieu de plt.show()) dans results/<date_heure>/
+# =====================================================================
+_SAVE_DIR: Optional[str] = None
+_FIG_COUNT: int = 0
+
+
+def init_results_dir(base_dir: Optional[str] = None, suffix: str = "") -> str:
+    """Cree (si besoin) results/<date_heure>[_suffix]/ et fixe le dossier de sortie pour ce run."""
+    global _SAVE_DIR, _FIG_COUNT
+    if base_dir is None:
+        base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(base_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%m-%d_%Hh%M")
+    folder_name = f"{timestamp}_{suffix}" if suffix else timestamp
+    _SAVE_DIR = os.path.join(base_dir, folder_name)
+    os.makedirs(_SAVE_DIR, exist_ok=True)
+    _FIG_COUNT = 0
+    return _SAVE_DIR
+
+
+def _slugify(text: str) -> str:
+    text = text.strip().lower()
+    out = []
+    for ch in text:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in (" ", "-", "_", "—", "–"):
+            out.append("_")
+    slug = "".join(out)
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_") or "plot"
+
+
+def _save_fig(fig, category: str = "", name: str = "") -> str:
+    """Sauvegarde fig dans results/<date_heure>/<category>/, puis la ferme."""
+    global _FIG_COUNT
+    if _SAVE_DIR is None:
+        init_results_dir()
+    out_dir = os.path.join(_SAVE_DIR, category) if category else _SAVE_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    _FIG_COUNT += 1
+    filename = f"{_FIG_COUNT:03d}_{_slugify(name)}.png"
+    path = os.path.join(out_dir, filename)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return path
 
 
 # =====================================================================
@@ -17,14 +70,14 @@ def plot_traces(time_vect,
                 title: str = "",
                 with_slider: bool = False,   # conservé pour compat, ignoré
                 noise_trace=None,
-                lick_threshold: float = None):
+                save_name: Optional[str] = None,
+                threshold: float = 1.0):
     """
     Affiche les traces temporelles:
-      Expectation, Uncertainty (U), Decision (D), Lick, Reward, Stim (ou RPE), Motivation
+      Expectation, P(Lick), Lick, Reward, Stim (ou RPE), Motivation
       + Noise gain (si noise_trace est fourni)
     - time_vect: (T,)
     - reward_array, stim_array, noise_trace: (T,1) ou (T,)
-    - lick_threshold: si fourni, trace une ligne horizontale sur le panneau Decision (mouse.lick_thrs)
     """
     import numpy as _np
     import matplotlib.pyplot as _plt
@@ -39,11 +92,12 @@ def plot_traces(time_vect,
 
     T = len(time_vect)
     expc   = _to_1d(mouse_session.expectation)
-    uncert = _to_1d(getattr(mouse_session, "uncertainty", None))
-    plick  = _to_1d(mouse_session.p_lick)   # contient D (fonction de décision), cf. function_mouse_lick
+    plick  = _to_1d(mouse_session.p_lick)
     lick   = _to_1d(mouse_session.lick)
     rpe    = _to_1d(mouse_session.rpe)
     motiv  = _to_1d(mouse_session.motivation)
+    uncert = _to_1d(getattr(mouse_session, "uncertainty", None))
+    nogo   = _to_1d(getattr(mouse_session, "expectation_nogo", None))
     reward = _to_1d(reward_array)
     stim   = _to_1d(stim_array) if stim_array is not None else None
     noise  = _to_1d(noise_trace) if noise_trace is not None else None
@@ -58,24 +112,31 @@ def plot_traces(time_vect,
         return y
 
     expc   = _align(expc)
-    uncert = _align(uncert)
     plick  = _align(plick)
     lick   = _align(lick)
     rpe    = _align(rpe)
     motiv  = _align(motiv)
+    uncert = _align(uncert)
+    nogo   = _align(nogo)
     reward = _align(reward)
     stim   = _align(stim)
     noise  = _align(noise)
 
     # Construction des panneaux
     rows = [
-        ("plot", time_vect, expc,   "Expectation (E)"),
+        ("plot", time_vect, expc,   "Expectation"),
     ]
-    if uncert is not None:
-        rows.append(("plot", time_vect, uncert, "Uncertainty (U)"))
-    rows.append(("plot_thresh", time_vect, plick, "Decision (D)"))
-    rows.append(("step", time_vect, lick,   "Lick"))
-    rows.append(("stem", time_vect, reward, "Reward"))
+
+    # N'affiche le panneau No-Go que s'il contient un signal (delearning_enable=True
+    # quelque part dans la session) — sinon ce serait une ligne plate à 0 inutile.
+    if nogo is not None and _np.any(nogo):
+        rows.append(("plot", time_vect, nogo, "Expectation No-Go"))
+
+    rows += [
+        ("plot", time_vect, plick,  "P(Lick)"),
+        ("step", time_vect, lick,   "Lick"),
+        ("stem", time_vect, reward, "Reward"),
+    ]
 
     if stim is not None and _np.any(stim):
         rows.append(("plot", time_vect, stim, "Stim"))
@@ -84,6 +145,9 @@ def plot_traces(time_vect,
 
     rows.append(("plot", time_vect, motiv, "Motivation"))
 
+    if uncert is not None:
+        rows.append(("plot", time_vect, uncert, "Uncertainty"))
+
     # Ajoute le panneau Noise gain si dispo
     if noise is not None:
         rows.append(("plot", time_vect, noise, "Noise gain"))
@@ -91,24 +155,71 @@ def plot_traces(time_vect,
     # Figure
     fig, axs = _plt.subplots(len(rows), 1, figsize=(12, 2.2*len(rows)), sharex=True)
 
+    # Bornes fixes pour les grandeurs dont la plage est definie par le modele
+    # (evite qu'un auto-scale sur une toute petite variation ne trompe la lecture)
+    fixed_ylim = {
+        "Expectation": (0.0, 1.0),
+        "Expectation No-Go": (0.0, 1.0),
+        "Motivation": (0.0, 1.0),
+        "RPE": (-1.05, 1.05),
+        "Lick": (-0.05, 1.05),
+        # Uncertainty n'a pas de bornes fixes: contrairement aux autres grandeurs,
+        # sa plage reellement atteinte varie beaucoup d'une session a l'autre (souvent
+        # tres inferieure a U_max=1.0) — un axe fixe [0,1] ecraserait la variation utile.
+    }
+
     for ax, (kind, x, y, label) in zip(axs, rows):
         if kind == "plot":
             ax.plot(x, y)
-        elif kind == "plot_thresh":
-            ax.plot(x, y)
-            if lick_threshold is not None:
-                ax.axhline(lick_threshold, linestyle="--", color="r", alpha=0.6, label="Threshold")
-                ax.legend(loc="upper right", fontsize=8)
+            if label == "P(Lick)":
+                ax.axhline(threshold, linestyle="--", alpha=0.5)
         elif kind == "step":
             ax.step(x, y, where="post")
         elif kind == "stem":
             ax.stem(x, y, linefmt='-', markerfmt=' ', basefmt=' ')
         ax.set_ylabel(label)
+        if label in fixed_ylim:
+            ax.set_ylim(*fixed_ylim[label])
 
     axs[-1].set_xlabel("Time (s)")
     fig.suptitle(title)
     fig.tight_layout()
-    plt.show()
+    _save_fig(fig, category="traces", name=save_name or title)
+
+
+# =====================================================================
+# Value / Cost par trial (brut) + moyenne glissante (expected_V, expected_C)
+# =====================================================================
+def plot_value_cost_trials(
+    trial_times: List[float],
+    v_trials: List[float],
+    c_trials: List[float],
+    expected_v: List[float],
+    expected_c: List[float],
+    title: str = "Value / Cost per trial",
+    save_name: Optional[str] = None,
+) -> None:
+    """
+    Deux courbes (expected_V, expected_C lisses, moyenne glissante) et les points
+    bruts de chaque trial (v_trials, c_trials) par-dessus.
+    """
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+
+    ax.plot(trial_times, expected_v, "-", color="tab:blue", linewidth=1.6, label="Expected V (smoothed)")
+    ax.plot(trial_times, expected_c, "-", color="tab:orange", linewidth=1.6, label="Expected C (smoothed)")
+
+    ax.scatter(trial_times, v_trials, marker="o", s=14, color="tab:blue", alpha=0.45, label="V (trial)")
+    ax.scatter(trial_times, c_trials, marker="o", s=14, color="tab:orange", alpha=0.45, label="C (trial)")
+
+    ax.set_ylim(0.0, 1.05)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Value / Cost")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(frameon=True)
+
+    fig.tight_layout()
+    _save_fig(fig, category="traces", name=save_name or title)
 
 
 # =====================================================================
@@ -116,7 +227,8 @@ def plot_traces(time_vect,
 # =====================================================================
 def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
                              labels: List[str],
-                             title: str = "HR & FA moyennes par session"):
+                             title: str = "HR & FA average per session",
+                             save_name: Optional[str] = None):
     """
     performance_list: list of np.ndarray, chacun = sortie de function_performance_wdt pour une session
                       colonnes: [t, stim_amp, lick_detected, latency, reward_detected, outcome]
@@ -142,7 +254,7 @@ def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
         fa_vals.append(fa)
 
     x = np.arange(len(labels))
-    plt.figure(figsize=(8, 5))
+    fig = plt.figure(figsize=(8, 5))
     plt.plot(x, hr_vals, 'o-', label='Hit Rate (HR)')
     plt.plot(x, fa_vals, 'o-', label='False Alarm (FA)')
     plt.xticks(x, labels)
@@ -153,7 +265,7 @@ def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    _save_fig(fig, category="learning_curve", name=save_name or title)
 
 
 # =====================================================================
@@ -162,7 +274,8 @@ def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
 def plot_wdt_block_rates(performance: np.ndarray,
                          wdt_params,
                          max_trials: int = 400,
-                         title: str = "") -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                         title: str = "",
+                         save_name: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     performance: np.ndarray renvoyé par function_performance_wdt
                  colonnes = [t, stim_amp, lick_detected, latency, reward_detected, outcome]
@@ -197,13 +310,13 @@ def plot_wdt_block_rates(performance: np.ndarray,
         hrs.append(hr); fas.append(far)
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(xs, hrs, linestyle="None", marker="x", label="Hit rate (bloc)")
-    ax.plot(xs, fas, linestyle="None", marker="o", label="False alarm (bloc)")
+    ax.plot(xs, hrs, linestyle="None", marker="x", label="Hit rate (block)")
+    ax.plot(xs, fas, linestyle="None", marker="o", label="False alarm (block)")
     ax.set_xlim(0, max_trials); ax.set_ylim(0, 1)
     ax.set_xlabel("Trial # (stim & catch)"); ax.set_ylabel("P(Lick)")
     if title: ax.set_title(title)
     ax.grid(True, alpha=0.3); ax.legend()
-    plt.tight_layout(); plt.show()
+    plt.tight_layout(); _save_fig(fig, category="block_rates", name=save_name or title or "block_rates")
 
     return np.array(xs), np.array(hrs), np.array(fas)
 
@@ -244,9 +357,10 @@ def session_rates(perf: Optional[np.ndarray],
 
 def plot_session_rates(performance_list: Iterable[Optional[np.ndarray]],
                        session_labels: List[str],
-                       title: str = "HR, FA & d′ par session (WDT)",
+                       title: str = "HR, FA & d′ per session (WDT)",
                        zero_when_empty: bool = True,
-                       ax: Optional[plt.Axes] = None
+                       ax: Optional[plt.Axes] = None,
+                       save_name: Optional[str] = None
                       ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     X = sessions ; Y (gauche) = P(Lick) pour HR/FA ; Y (droite) = d′.
@@ -284,7 +398,7 @@ def plot_session_rates(performance_list: Iterable[Optional[np.ndarray]],
     ax.legend(h1 + h2, l1 + l2, loc="best", frameon=True)
 
     if created_fig:
-        plt.tight_layout(); plt.show()
+        plt.tight_layout(); _save_fig(fig, category="learning_curve", name=save_name or title)
 
     return xs, hr_arr, fa_arr, dp_arr
 
@@ -297,6 +411,7 @@ def plot_single_session_rates(
     title: str = "HR vs FA (session)",
     zero_when_empty: bool = True,
     ax: Optional[plt.Axes] = None,
+    save_name: Optional[str] = None,
 ) -> Tuple[float, float, float]:
     """Plot compact pour UNE session (HR & FA) + d′ en légende."""
     hr, fa, dprime = session_rates(perf, zero_when_empty=zero_when_empty)
@@ -321,7 +436,7 @@ def plot_single_session_rates(
     ax.grid(True, axis="y", alpha=0.3)
 
     if created_fig:
-        plt.tight_layout(); plt.show()
+        plt.tight_layout(); _save_fig(fig, category="session_summary", name=save_name or title)
 
     return float(hr), float(fa), float(dprime)
 
@@ -329,12 +444,13 @@ def plot_single_session_rates(
 def plot_multi_mouse_single_session(
     performance_list: Iterable[Optional[np.ndarray]],
     mouse_labels: List[str],
-    title: str = "HR vs FA par souris (session unique)",
+    title: str = "HR vs FA per mouse (single session)",
     zero_when_empty: bool = True,
     jitter: float = 0.06,
     annotate_dprime: bool = True,
     ax: Optional[plt.Axes] = None,
-    show: bool = True
+    show: bool = True,
+    save_name: Optional[str] = None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Superpose HR (x) et FA (o) pour plusieurs souris sur UNE session.
@@ -380,7 +496,7 @@ def plot_multi_mouse_single_session(
     ax.legend(ncols=1, frameon=True)
 
     if created_fig and show:
-        plt.tight_layout(); plt.show()
+        plt.tight_layout(); _save_fig(fig, category="population", name=save_name or title)
     return hr_arr, fa_arr, dp_arr
 
 
@@ -451,9 +567,10 @@ def overlay_group_stats_on_current_axes(hr_arr: np.ndarray,
 # RPE par lick (scatter)
 # =====================================================================
 def plot_rpe_per_lick(rpe_table: np.ndarray,
-                      title: str = "RPE par lick",
+                      title: str = "RPE per lick",
                       ax: Optional[plt.Axes] = None,
-                      show: bool = True
+                      show: bool = True,
+                      save_name: Optional[str] = None
                      ) -> Tuple[np.ndarray, np.ndarray]:
     """
     rpe_table: (N x 6) tel que renvoyé par extract_rpe_per_lick
@@ -462,11 +579,11 @@ def plot_rpe_per_lick(rpe_table: np.ndarray,
     if rpe_table is None or rpe_table.size == 0:
         fig, ax = plt.subplots(figsize=(7, 4)) if ax is None else (None, ax)
         ax.set_title(title); ax.set_xlabel("Lick #"); ax.set_ylabel("RPE")
-        ax.text(0.5, 0.5, "Aucun lick utilisable", transform=ax.transAxes,
+        ax.text(0.5, 0.5, "No usable licks", transform=ax.transAxes,
                 ha="center", va="center", alpha=0.7)
         ax.grid(True, axis="y", alpha=0.3)
         if fig is not None and show:
-            plt.tight_layout(); plt.show()
+            plt.tight_layout(); _save_fig(fig, category="rpe", name=save_name or title)
         return np.array([]), np.array([])
 
     x = rpe_table[:, 0]
@@ -490,14 +607,15 @@ def plot_rpe_per_lick(rpe_table: np.ndarray,
     ax.legend(frameon=True)
 
     if created_fig and show:
-        plt.tight_layout(); plt.show()
+        plt.tight_layout(); _save_fig(fig, category="rpe", name=save_name or title)
 
     return x, y
 
 def plot_abs_rpe_per_lick(rpe_table: np.ndarray,
-                          title: str = "Valeur absolue des RPE par lick",
+                          title: str = "Absolute RPE per lick",
                           ax: Optional[plt.Axes] = None,
-                          show: bool = True
+                          show: bool = True,
+                          save_name: Optional[str] = None
                          ) -> Tuple[np.ndarray, np.ndarray]:
     """
     rpe_table: (N x 6) tel que renvoyé par extract_rpe_per_lick
@@ -512,11 +630,11 @@ def plot_abs_rpe_per_lick(rpe_table: np.ndarray,
         ax.set_title(title)
         ax.set_xlabel("Lick #")
         ax.set_ylabel("|RPE|")
-        ax.text(0.5, 0.5, "Aucun lick utilisable", transform=ax.transAxes,
+        ax.text(0.5, 0.5, "No usable licks", transform=ax.transAxes,
                 ha="center", va="center", alpha=0.7)
         ax.grid(True, axis="y", alpha=0.3)
         if fig is not None and show:
-            plt.tight_layout(); plt.show()
+            plt.tight_layout(); _save_fig(fig, category="rpe", name=save_name or title)
         return np.array([]), np.array([])
 
     x = rpe_table[:, 0]
@@ -542,7 +660,7 @@ def plot_abs_rpe_per_lick(rpe_table: np.ndarray,
 
     if created_fig and show:
         plt.tight_layout()
-        plt.show()
+        _save_fig(fig, category="rpe", name=save_name or title)
 
     return x, y_abs
 
@@ -553,7 +671,8 @@ def plot_noise_gain_sigmoid(m0: float,
                             m_grid: Optional[np.ndarray] = None,
                             ax: Optional[plt.Axes] = None,
                             title: Optional[str] = None,
-                            show: bool = True
+                            show: bool = True,
+                            save_name: Optional[str] = None
                            ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Trace la loi statique croissante:
@@ -582,7 +701,7 @@ def plot_noise_gain_sigmoid(m0: float,
     ax.set_ylim(min(gmin, gmax), max(gmin, gmax))
     ax.set_xlabel("m = mean(|RPE|) sur les n derniers licks")
     ax.set_ylabel("noise gain g")
-    ax.set_title(title or "Mapping statique (sigmoïde) : g(m)")
+    ax.set_title(title or "Static mapping (sigmoid): g(m)")
     # repères
     ax.axvline(m0, linestyle="--", alpha=0.5)
     ax.axhline(gmin + 0.5*(gmax - gmin), linestyle=":", alpha=0.5)
@@ -590,7 +709,7 @@ def plot_noise_gain_sigmoid(m0: float,
     ax.legend(frameon=True)
 
     if created and show:
-        plt.tight_layout(); plt.show()
+        plt.tight_layout(); _save_fig(fig, category="noise", name=save_name or title or "noise_gain_mapping")
     return m, g
 
 
@@ -607,6 +726,7 @@ def plot_population_hr_fa(
     annotate_dprime: bool = True,
     zero_when_empty: bool = True,
     title: Optional[str] = None,
+    save_name: Optional[str] = None,
 ):
     """
     Style 'cohorte' façon capture :
@@ -659,7 +779,7 @@ def plot_population_hr_fa(
     ax.set_xticks([x_hr, x_fa])
     ax.set_xticklabels(["HR", "FA"], fontsize=12, fontweight="bold")
     ax.set_ylabel("P(Lick)")
-    ttl = title or f"{session_name} — HR vs FA (cohorte {n} souris, g={noise_gain:.3f}, lr={learning_stim:.3f})"
+    ttl = title or f"{session_name} — HR vs FA (cohort of {n} mice, g={noise_gain:.3f}, lr={learning_stim:.3f})"
     ax.set_title(ttl, fontsize=14, fontweight="bold")
     ax.grid(True, axis="y", alpha=0.25)
 
@@ -688,6 +808,34 @@ def plot_population_hr_fa(
               frameon=True, title=None)
 
     plt.tight_layout()
-    plt.show()
+    _save_fig(fig, category="population", name=save_name or f"population_hr_fa_{session_name}")
 
     return hr_arr, fa_arr, dp_arr
+
+
+# =====================================================================
+# Fichier texte recapitulatif des parametres numeriques de la simulation
+# =====================================================================
+def save_parameters_txt(
+    rows: List[Tuple[str, Optional[object]]],
+    filename: str = "parameters.txt",
+) -> str:
+    """
+    rows: liste de tuples (name, value). Une ligne de section (titre de groupe)
+    s'obtient en passant value=None. Ecrit results/<date_heure>/<filename>.
+    """
+    if _SAVE_DIR is None:
+        init_results_dir()
+    path = os.path.join(_SAVE_DIR, filename)
+
+    name_width = max((len(str(name)) for name, value in rows if value is not None), default=20)
+
+    with open(path, "w") as f:
+        for name, value in rows:
+            if value is None:
+                f.write(f"\n{name}\n")
+                f.write("-" * len(name) + "\n")
+            else:
+                f.write(f"{str(name):<{name_width}} : {value}\n")
+
+    return path

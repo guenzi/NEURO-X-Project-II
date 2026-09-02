@@ -25,40 +25,50 @@ class SessionBaseInfo:
 
 @dataclass
 class Mouse:
-    # Gain recalibré (0.07 -> 0.022) : dans D, Nd n'entre plus qu'à moitié poids (sigmoïde à U=0),
-    # contrairement à l'ancienne formule p_lick=(E+Nd)*M où Nd comptait à plein poids. Sans ce
-    # recalibrage, le bruit seul suffisait à dépasser le seuil dès t=0 (souris naïve qui lèche
-    # immédiatement) — cf. exigence du PDF "Nd calibré tel qu'une souris naïve ne lèche pas".
-    # Vérifié empiriquement (grid search) : gain=0.022 + seuil=0.35 => 0 lick spontané avant le
-    # forced reward de FL1 (sur plusieurs seeds) tout en laissant l'apprentissage WDT démarrer.
-    noise: tuple = (1.2, 3, 0.022)              # Gamma noise: (shape a, scale b, gain) — bruit Nd (exploration)
-    lick_thrs: float = 0.35                     # Threshold FL: la souris lick si D > Threshold
-    # Seuil séparé pour les sessions WDT : intégré du travail du collègue (Code_mono_stim/main.py,
-    # LICK_THRS_WDT). Nécessaire car quand V/C varient par trial (moyenne ~0.5 au lieu de 1.0
-    # fixe), l'échelle de [V.M-C] change entre FL (V=1,C=0 statiques) et WDT (V,C dynamiques)
-    # — cf. recalibrage empirique plus bas.
-    # Calibré empiriquement (grid search, V~U(0.5,1.0), C~U(0,0.5)) : meilleur compromis entre
-    # une vraie courbe d'apprentissage progressive (HR ~0.57->0.77 sur WDT1-10, pas un plafond
-    # immédiat) et un FA qui reste non-nul (même faible) en sessions tardives plutôt que de
-    # s'effondrer totalement à 0 comme avec un seuil trop élevé.
-    lick_thrs_wdt: float = 0.12                 # Threshold WDT: la souris lick si D > Threshold_wdt
-
-    # --- Decision function D = [E/(1+e^{A.U}) + Nd/(1+e^{-A.U})] . [V.M - C]
-    decision_slope: float = 5.0                 # "A" : pente de transition exploitation/exploration (fn de U)
-    # V et C : fusion avec le travail du collègue (Code_mono_stim/functions.py, sample_trial_value_cost).
-    # Ces deux champs contiennent la valeur COURANTE de V/C : constants (1.0 / 0.0) pendant les
-    # sessions Free Licking, mais réglés dynamiquement à chaque nouveau trial WDT par
-    # sample_trial_value_cost() sur une moyenne glissante des derniers tirages
-    # (V~Uniform(0.5,1.0)=taille de goutte, C~Uniform(0,0.5)=distance/difficulté du spout).
-    value: float = 1.0                          # V : valeur de l'outcome (constant en FL, dynamique en WDT)
-    cost: float = 0.0                           # C : coût de l'action (constant en FL, dynamique en WDT)
+    noise: tuple = (1.2, 0.4)                   # Gamma noise Nd: (shape a, scale b) — pas de gain separe,
+                                                 # son impact sur la decision vient uniquement du poids
+                                                 # pilote par Uncertainty (w_explore), pas d'un multiplicateur.
+    lick_thrs: float = 1.0                      # threshold for Free Licking: if p_lick >= threshold → emit lick
+    lick_thrs_wdt: float = 1.0                  # threshold for WDT sessions (separate scale, e.g. when V/C shrink the gate)
     motivation: tuple = (1.0, 0.003)            # (initial value, loss per reward)
-    exp_update_reward: tuple = (2000, 0.2)      # (tau, gain) for expectation update after reward
+    exp_update_reward: tuple = (2000, 0.3)      # (tau, gain) for expectation update after reward
     exp_update_no_reward: tuple = (4, 0.4)      # (tau, gain) for update after lick without reward
     exp_update_stim: tuple = (1, 0.1)           # (tau, gain) for update after a stimulus
     learning_nonrew_lick: tuple = (2, 1)        # (threshold of non-reward licks, tau increment)
-    learning_stim: float = 0.015                # learning rate for stimulus gain (scaled by RPE * eligibility)
+    learning_stim: float = 0.004                # learning rate for stimulus gain (scaled by RPE * eligibility)
     tau_eligibility: float = 2.0                # eligibility trace time constant (seconds)
+
+    # --- Désapprentissage / architecture Go-No-Go (D1R/D2R inspired) -------------------------
+    # Off par défaut : ne change rien au comportement existant tant que delearning_enable=False.
+    # Quand True : en PLUS de la dynamique actuelle de `expectation` (inchangée — toujours
+    # tirée vers le bas par exp_update_no_reward à chaque lick non récompensé), une voie
+    # séparée `expectation_nogo` (cf MouseSessionState) accumule un signal d'inhibition plus
+    # lent et plus persistant. La décision utilise alors E_go - E_nogo (function_mouse_lick).
+    delearning_enable: bool = False             # active/désactive l'architecture Go/No-Go
+    exp_update_nogo: tuple = (8.0, 0.15)        # (tau, gain) pour la voie No-Go. gain = fraction de
+                                                 # (1 - E_nogo) ajoutée à chaque bout de léchage non
+                                                 # récompensé (kick saturant, borné par construction —
+                                                 # voir function_update_mouse_state). tau = constante de
+                                                 # temps de décroissance entre deux bouts.
+    nogo_relief: float = 0.4                    # fraction de E_nogo effacée à chaque récompense confirmée
+                                                 # (réacquisition rapide) — sans ça, E_nogo ne peut que
+                                                 # monter et finit par saturer et bloquer tout lick.
+
+    reward_value: float = 1.0                   # V: value of the reward, gates the decision (V*M - C)
+    cost: float = 0.0                           # C: cost of licking, gates the decision (V*M - C)
+
+    # --- Decision function D = [E/(1+e^{A_D.(U-U0)}) + Nd/(1+e^{-A_D.(U-U0)})] . [V.M - C]
+    # A_D separe par contexte (comme lick_thrs/lick_thrs_wdt): en Free Licking on veut que E
+    # domine fort des qu'un signal net existe (transition raide) ; en WDT on veut une transition
+    # douce pour un apprentissage progressif sur plusieurs sessions plutot qu'un "tout ou rien".
+    decision_slope: float = 5.0                 # "A_D" pour Free Licking: pente de transition exploit/explore
+    decision_slope_wdt: float = 3.0             # "A_D" pour WDT: pente plus douce, apprentissage progressif
+    uncertainty_offset: float = 0.5             # "U0": point neutre de la sigmoide — a U=U0, poids 50/50.
+                                                 # A U=0 (souris naive/pas de surprise), E domine (w_exploit haut,
+                                                 # w_explore quasi nul) au lieu d'un 50/50 qui laisserait le bruit
+                                                 # seul faire licker meme sans aucune expectation.
+    uncertainty_gain: float = 0.1               # "A_U": facteur d'echelle de la mise a jour de U, dans [0,1]
+    uncertainty_max: float = 1.0                # U_max: borne haute de U (U reste dans [0, U_max])
 
     noise_adapt_enable: bool = True             # active/désactive la feature
     noise_target_rpe: float = 0.20              # |RPE| "attendu" (0..1)
@@ -66,10 +76,6 @@ class Mouse:
     noise_update_period_bins: int = 5           # met à jour tous les 5 bins
     noise_alpha: float = 0.3                    # pas d'adaptation (0.1..0.4 raisonnable)
     noise_gain_bounds: tuple = (0.01, 0.20)     # [gain_min, gain_max] pour rester stable
-
-    # --- Uncertainty function U (cahier des charges: U_{t+1} = U_t + A*(2*|RPE_t|-1)^3, à chaque lick)
-    uncertainty_gain: float = 0.1               # "A" dans la formule de U (facteur d'échelle, dans [0,1])
-    uncertainty_max: float = 1.0                # U_max : borne haute de U (U reste dans [0, U_max])
 
 
 
@@ -140,24 +146,26 @@ class MouseSessionState:
     expectation: np.ndarray = field(default_factory=lambda: np.array([]))  # reward expectation (0–1) per time bin
     motivation: np.ndarray = field(default_factory=lambda: np.array([]))   # current motivation (scales p_lick)
     rpe: np.ndarray = field(default_factory=lambda: np.array([]))          # reward prediction error (reward - expectation)
-    p_lick: np.ndarray = field(default_factory=lambda: np.array([]))       # historique: gardé pour compat plots, contient D
-    decision: np.ndarray = field(default_factory=lambda: np.array([]))     # D: valeur de la fonction de décision par bin
+    p_lick: np.ndarray = field(default_factory=lambda: np.array([]))       # lick drive / probability per bin
     lick: np.ndarray = field(default_factory=lambda: np.array([]))         # 0/1 lick emitted at this bin
     eligibility: np.ndarray = field(default_factory=lambda: np.array([]))  # eligibility trace (exponential decay)
     uncertainty: np.ndarray = field(default_factory=lambda: np.array([]))  # U: confidence in the internal model, [0, U_max]
+    expectation_nogo: np.ndarray = field(default_factory=lambda: np.array([]))  # E_nogo: voie d'inhibition (Go/No-Go)
     non_rew_lick_cnt: int = 0
 
     def initialize(self, session_length: int, init_motivation: float, init_expectation: float = 0.0,
-                   init_uncertainty: float = 0.0):
+                   init_uncertainty: float = 0.0, init_expectation_nogo: float = 0.0):
         self.expectation = np.full((session_length, 1), float(init_expectation))    # set initial expectation constant
         self.motivation = np.zeros((session_length, 1))                             # allocate motivation curve
         self.motivation[0, 0] = init_motivation                                     # set motivation at t=0
-        self.decision = np.zeros((session_length, 1))                               # allocate D curve
         self.rpe = np.zeros((session_length, 1))                                    # allocate RPE curve
         self.p_lick = np.zeros((session_length, 1))                                 # allocate p(lick) curve
         self.lick = np.zeros((session_length, 1))                                   # allocate lick (0/1) curve
-        # U est un "state" (comme Expectation, cf. slide 6) : pas de forgetting entre sessions,
-        # on repart du dernier niveau de confiance atteint (sauf pour la toute 1ere session, U=0).
-        self.uncertainty = np.full((session_length, 1), float(init_uncertainty))
         self.eligibility = np.zeros((session_length, 1))                            # allocate eligibility trace
+        # U est un "state" (comme Expectation) : pas de forgetting entre sessions, on repart
+        # du dernier niveau de confiance atteint (sauf pour la toute 1ere session, U=0).
+        self.uncertainty = np.full((session_length, 1), float(init_uncertainty))
+        # E_nogo persiste aussi entre sessions (même logique que E et U) : la "méfiance"
+        # accumulée ne doit pas être remise à zéro juste parce qu'une nouvelle session démarre.
+        self.expectation_nogo = np.full((session_length, 1), float(init_expectation_nogo))
         self.non_rew_lick_cnt = 0                                                   # reset non-reward lick counter

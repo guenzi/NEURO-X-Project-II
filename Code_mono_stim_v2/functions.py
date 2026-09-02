@@ -22,41 +22,52 @@ def sample_uniform_range(min_val, max_val):
     return min_val + (max_val - min_val) * random.random()
 
 
-def function_mouse_lick(mouse: Mouse, mouse_session: MouseSessionState, i: int) -> tuple[int, MouseSessionState]:
+def function_mouse_lick(
+    mouse: Mouse,
+    mouse_session: MouseSessionState,
+    i: int,
+    threshold: Optional[float] = None,
+    decision_slope: Optional[float] = None,
+) -> tuple[int, MouseSessionState]:
     """
-    Decision function D (cahier des charges, slide 7):
-        D = [E/(1+e^{A.U}) + Nd/(1+e^{-A.U})] . [V.M - C]
-        Mouse licks if D > Threshold.
+    Decision function D:
+        D = [E/(1+e^{A_D.(U-U0)}) + Nd/(1+e^{-A_D.(U-U0)})] . [V.M - C]
+        Mouse licks if D >= threshold.
 
-    Le signe est bien -A.U sous l'exponentielle de Nd, et +A.U sous celle de E
-    (et non l'inverse comme écrit littéralement sur la slide) : ainsi quand U
-    (Uncertainty) augmente, le poids sur le bruit Nd augmente (exploration) et
-    le poids sur l'expectation E diminue (moins d'exploitation) — cohérent avec
-    la description "Nd modulated by Uncertainty: Exploitation vs Exploration".
-
-    V (Value) et C (Cost) sont pour l'instant des constantes (mouse.value,
-    mouse.cost) en attendant leur implémentation dynamique.
+    Le signe est bien +A_D.(U-U0) sous l'exponentielle de E (poids qui decroit avec U)
+    et -A_D.(U-U0) sous celle de Nd (poids qui croit avec U) : quand l'incertitude U
+    augmente au-dela du point neutre U0, le poids sur le bruit Nd augmente (exploration)
+    et le poids sur l'expectation E diminue (moins d'exploitation). En dessous de U0
+    (souris confiante / naive sans surprise), E domine et le bruit est quasi-nul.
     """
     lick = 0
 
     motivation_t = mouse_session.motivation[i - 1, 0]
     expectation_t = mouse_session.expectation[i - 1, 0]
+    if mouse.delearning_enable:
+        # Drive net de la voie Go/No-Go : E_go - E_nogo. Si delearning_enable=False,
+        # cette ligne n'est jamais exécutée et expectation_t reste E_go seule (comportement actuel).
+        expectation_t = expectation_t - mouse_session.expectation_nogo[i - 1, 0]
     uncertainty_t = mouse_session.uncertainty[i - 1, 0]
 
-    gamma_noise = np.random.gamma(mouse.noise[0], mouse.noise[1]) * mouse.noise[2]
+    gamma_noise = np.random.gamma(mouse.noise[0], mouse.noise[1])
 
-    A = mouse.decision_slope
-    w_exploit = 1.0 / (1.0 + np.exp(A * uncertainty_t))     # poids de E, décroît avec U
-    w_explore = 1.0 / (1.0 + np.exp(-A * uncertainty_t))    # poids de Nd, croît avec U
+    A = mouse.decision_slope if decision_slope is None else decision_slope
+    u_rel = uncertainty_t - mouse.uncertainty_offset
+    w_exploit = 1.0 / (1.0 + np.exp(A * u_rel))     # poids de E, decroit avec U
+    w_explore = 1.0 / (1.0 + np.exp(-A * u_rel))    # poids de Nd, croit avec U
 
     drive = expectation_t * w_exploit + gamma_noise * w_explore
-    d_t = drive * (mouse.value * motivation_t - mouse.cost)
 
-    if d_t > mouse.lick_thrs:
+    # decision gate: V*M - C (reward value * motivation, minus cost of licking)
+    decision_gate = mouse.reward_value * motivation_t - mouse.cost
+    p_lick_t = drive * decision_gate
+
+    lick_thrs = mouse.lick_thrs if threshold is None else threshold
+    if p_lick_t >= lick_thrs:
         lick = 1
 
-    mouse_session.decision[i, 0] = d_t
-    mouse_session.p_lick[i, 0] = d_t   # gardé pour compat avec les plots existants (panneau "P(Lick)")
+    mouse_session.p_lick[i, 0] = p_lick_t
     mouse_session.lick[i, 0] = lick
 
     return lick, mouse_session
@@ -85,12 +96,52 @@ def function_update_mouse_state(
     rpe_t = reward_t - mouse_session.expectation[i - 1, 0]
     mouse_session.rpe[i, 0] = rpe_t
 
-    # --- Uncertainty (Expectation Update Rule #2): U_{t+1} = U_t + A*(2*|RPE_t|-1)^3, sur chaque lick
+    # Uncertainty: U_{t+1} = U_t + A_U*(2*|RPE_t|-1)^3, sur tout evenement saillant
+    # (lick, recompense ou non ; OU reward recu meme sans lick, ex: forced reward) —
+    # aligne avec Expectation, qui se met deja a jour sans condition de lick des qu'il
+    # y a un reward (ligne ~102). Sans cette extension, un forced reward (le plus gros
+    # RPE de toute la session) ne modifiait jamais U puisqu'aucun lick ne l'accompagne.
     mouse_session.uncertainty[i, 0] = mouse_session.uncertainty[i - 1, 0]
-    if mouse_session.lick[i - 1, 0] == 1:
+    if mouse_session.lick[i - 1, 0] == 1 or reward_t > 0:
         u_prev = mouse_session.uncertainty[i - 1, 0]
         u_new = u_prev + mouse.uncertainty_gain * (2.0 * abs(rpe_t) - 1.0) ** 3
         mouse_session.uncertainty[i, 0] = float(np.clip(u_new, 0.0, mouse.uncertainty_max))
+
+    # --- E_nogo (voie No-Go, désapprentissage) --------------------------------------------
+    # IMPORTANT : ceci s'ajoute à la mise à jour existante de `expectation` ci-dessous
+    # (qui reste inchangée, avec ou sans delearning_enable) — ce n'est PAS un remplacement.
+    # E_go garde exactement sa dynamique rapide actuelle (monte à la récompense, redescend
+    # à chaque lick non récompensé via exp_update_no_reward) ; E_nogo est un signal
+    # supplémentaire, plus lent et plus persistant, qui vient s'y opposer au moment de la
+    # décision (E_go - E_nogo). Une première version qui remplaçait la mise à jour de E_go
+    # par E_nogo cassait complètement l'équilibre du modèle (E_go ne redescend plus jamais
+    # seul seul, donc licks impulsifs beaucoup plus fréquents que ce que E_nogo pouvait
+    # compenser) — la garder active est nécessaire à la stabilité du système.
+    #
+    # Contrairement à expectation/eligibility (mises à jour en injectant un noyau qui décroît
+    # DANS LE FUTUR dès qu'un évènement survient), E_nogo est mise à jour comme motivation/
+    # uncertainty : une récurrence simple, recalculée à CHAQUE bin à partir de sa valeur
+    # précédente. Le kick est "saturant" (gain*(1-E_nogo) et non +gain) : plus E_nogo est
+    # déjà haut, moins un nouveau bout l'augmente — ça borne le système par construction.
+    if mouse.delearning_enable:
+        tau_nogo, gain_nogo = mouse.exp_update_nogo
+        decay = np.exp(-session_info.resolution / tau_nogo)
+        e_nogo_new = mouse_session.expectation_nogo[i - 1, 0] * decay
+
+        is_new_unrewarded_bout = (
+            reward_t == 0
+            and mouse_session.lick[i - 1, 0] == 1
+            and (i < 2 or mouse_session.lick[i - 2, 0] == 0)
+        )
+        if is_new_unrewarded_bout:
+            e_nogo_new = e_nogo_new + gain_nogo * (1.0 - e_nogo_new)
+
+        if reward_t > 0:
+            # "Soulagement" : une récompense confirmée efface une partie de la méfiance déjà
+            # accumulée (réacquisition rapide après extinction, cf. littérature comportementale).
+            e_nogo_new = e_nogo_new * (1.0 - mouse.nogo_relief)
+
+        mouse_session.expectation_nogo[i, 0] = float(np.clip(e_nogo_new, 0.0, 1.0))
 
     if reward_t > 0:
         update = (
@@ -100,10 +151,10 @@ def function_update_mouse_state(
         )
         mouse_session.expectation[i:, 0] += update[i:]
         mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
-        # Learning Rule #1 counts CONSECUTIVE non-rewarded licks: a rewarded lick breaks the streak.
-        mouse_session.non_rew_lick_cnt = 0
 
     if reward_t == 0 and mouse_session.lick[i - 1, 0] == 1:
+        # Comportement actuel (non modifié, actif que delearning_enable soit True ou
+        # False) : le lick non récompensé soustrait directement de l'expectation E_go.
         update = (
             rpe_t
             * mouse.exp_update_no_reward[1]
@@ -112,6 +163,8 @@ def function_update_mouse_state(
         mouse_session.expectation[i:, 0] += update[i:]
         mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
         mouse_session.non_rew_lick_cnt += 1
+    elif reward_t > 0 and mouse_session.lick[i - 1, 0] == 1:
+        mouse_session.non_rew_lick_cnt = 0
 
     if stim_t > 0:
         stim_gain = mouse.exp_update_stim[1]
@@ -125,6 +178,9 @@ def function_update_mouse_state(
         mouse_session.eligibility[i:, 0] += update_elig[i:]
         mouse_session.eligibility = np.clip(mouse_session.eligibility, 0, 1)
 
+    # Comportement actuel (non modifié) : reste actif que delearning_enable soit True ou
+    # False (cf. note au-dessus de la mise à jour de E_nogo — celle-ci s'ajoute à la
+    # dynamique existante, elle ne la remplace pas).
     if mouse_session.non_rew_lick_cnt >= mouse.learning_nonrew_lick[0]:
         old_tau, gain = mouse.exp_update_no_reward
         mouse.exp_update_no_reward = (old_tau + mouse.learning_nonrew_lick[1], gain)
@@ -151,8 +207,16 @@ def function_fl_session(
         reward = session_param.reward_size
         fl_session.last_reward_time = t
 
+    # Avant la forced reward (si programmee), un lick spontane n'est jamais recompense :
+    # l'expectation est censee etre a 0, donc il n'y a aucune raison biologique qu'un lick
+    # "au hasard" (bruit) declenche une recompense avant que la souris ait decouvert la tache.
+    reward_eligible = (
+        session_param.forced_reward[0] == 0
+        or t >= session_param.forced_reward[1]
+    )
+
     if lick == 1:
-        if (t - fl_session.last_lick_time) > fl_session.no_lick_wind:
+        if reward_eligible and (t - fl_session.last_lick_time) > fl_session.no_lick_wind:
             fl_session.no_lick_wind = sample_uniform_range(*session_param.no_lick_wind)
             if random.random() <= session_param.reward_prob:
                 reward = session_param.reward_size
@@ -217,15 +281,18 @@ def sample_trial_value_cost(
     mouse: Mouse,
     buf_v,
     buf_c,
-    v_range: tuple = (0.5, 1.0),
-    c_range: tuple = (0.0, 0.5),
+    v_range: tuple[float, float] = (0.01, 1.0),
+    c_range: tuple[float, float] = (0.0, 1.0),
 ) -> tuple[float, float, float, float]:
     """
-    A appeler quand un nouveau trial WDT démarre (new_trial=True).
-    Tire une Value (taille de goutte) et un Cost (distance/difficulté) instantanés
-    pour ce trial, les pousse dans des buffers glissants, et règle mouse.value /
-    mouse.cost sur la moyenne des derniers trials (expected_V, expected_C) —
-    utilisée par la fonction de décision D = [...] . [V.M - C].
+    A appeler quand un nouveau trial WDT demarre (new_trial=True).
+    Tire une Value (taille de goutte) et un Cost (distance/difficulte) instantanes
+    pour ce trial, les pousse dans les buffers glissants, et regle
+    mouse.reward_value / mouse.cost sur la moyenne des derniers trials
+    (expected_V, expected_C) utilisee par la fonction de decision.
+
+    Retourne (v_trial, c_trial, expected_v, expected_c) — la valeur brute de
+    ce trial ET la moyenne glissante, pour permettre de tracer les deux.
     """
     v_trial = random.uniform(*v_range)
     c_trial = random.uniform(*c_range)
@@ -234,7 +301,7 @@ def sample_trial_value_cost(
 
     expected_v = float(np.mean(buf_v))
     expected_c = float(np.mean(buf_c))
-    mouse.value = expected_v
+    mouse.reward_value = expected_v
     mouse.cost = expected_c
 
     return v_trial, c_trial, expected_v, expected_c
