@@ -10,9 +10,7 @@ from statistics import NormalDist
 from typing import Optional, Iterable, Tuple, List
 
 
-# =====================================================================
 # Sauvegarde des figures (au lieu de plt.show()) dans results/<date_heure>/
-# =====================================================================
 _SAVE_DIR: Optional[str] = None
 _FIG_COUNT: int = 0
 
@@ -60,9 +58,7 @@ def _save_fig(fig, category: str = "", name: str = "") -> str:
     return path
 
 
-# =====================================================================
 # Traces temporelles (expectation, p_lick, lick, reward, stim/RPE, motivation)
-# =====================================================================
 def plot_traces(time_vect,
                 mouse_session,
                 reward_array,
@@ -71,7 +67,8 @@ def plot_traces(time_vect,
                 with_slider: bool = False,   # conservé pour compat, ignoré
                 noise_trace=None,
                 save_name: Optional[str] = None,
-                threshold: float = 1.0):
+                threshold: float = 1.0,
+                dual_stim: bool = False):
     """
     Affiche les traces temporelles:
       Expectation, P(Lick), Lick, Reward, Stim (ou RPE), Motivation
@@ -91,13 +88,23 @@ def plot_traces(time_vect,
         return a
 
     T = len(time_vect)
-    expc   = _to_1d(mouse_session.expectation)
+    if dual_stim:
+        expc = None
+        e_right = _to_1d(mouse_session.expectation_right)
+        e_left = _to_1d(mouse_session.expectation_left)
+        nogo = None
+        nogo_right = _to_1d(getattr(mouse_session, "expectation_nogo_right", None))
+        nogo_left = _to_1d(getattr(mouse_session, "expectation_nogo_left", None))
+    else:
+        expc = _to_1d(mouse_session.expectation)
+        e_right = e_left = None
+        nogo = _to_1d(getattr(mouse_session, "expectation_nogo", None))
+        nogo_right = nogo_left = None
     plick  = _to_1d(mouse_session.p_lick)
     lick   = _to_1d(mouse_session.lick)
     rpe    = _to_1d(mouse_session.rpe)
     motiv  = _to_1d(mouse_session.motivation)
     uncert = _to_1d(getattr(mouse_session, "uncertainty", None))
-    nogo   = _to_1d(getattr(mouse_session, "expectation_nogo", None))
     reward = _to_1d(reward_array)
     stim   = _to_1d(stim_array) if stim_array is not None else None
     noise  = _to_1d(noise_trace) if noise_trace is not None else None
@@ -112,31 +119,47 @@ def plot_traces(time_vect,
         return y
 
     expc   = _align(expc)
+    e_right = _align(e_right)
+    e_left = _align(e_left)
+    nogo   = _align(nogo)
+    nogo_right = _align(nogo_right)
+    nogo_left  = _align(nogo_left)
     plick  = _align(plick)
     lick   = _align(lick)
     rpe    = _align(rpe)
     motiv  = _align(motiv)
     uncert = _align(uncert)
-    nogo   = _align(nogo)
     reward = _align(reward)
     stim   = _align(stim)
     noise  = _align(noise)
 
     # Construction des panneaux
-    rows = [
-        ("plot", time_vect, expc,   "Expectation"),
-    ]
+    if dual_stim:
+        rows = [
+            ("plot_side", time_vect, e_right, "Expectation droite"),
+            ("plot_side", time_vect, e_left, "Expectation gauche"),
+        ]
+        # Panneaux No-Go seulement s'ils contiennent un signal (delearning_enable=True
+        # quelque part dans la session) — sinon ce serait une ligne plate a 0 inutile.
+        if nogo_right is not None and _np.any(nogo_right):
+            rows.append(("plot_side", time_vect, nogo_right, "Expectation No-Go droite"))
+        if nogo_left is not None and _np.any(nogo_left):
+            rows.append(("plot_side", time_vect, nogo_left, "Expectation No-Go gauche"))
+    else:
+        rows = [("plot", time_vect, expc, "Expectation")]
+        if nogo is not None and _np.any(nogo):
+            rows.append(("plot", time_vect, nogo, "Expectation No-Go"))
 
-    # N'affiche le panneau No-Go que s'il contient un signal (delearning_enable=True
-    # quelque part dans la session) — sinon ce serait une ligne plate à 0 inutile.
-    if nogo is not None and _np.any(nogo):
-        rows.append(("plot", time_vect, nogo, "Expectation No-Go"))
+    if dual_stim:
+        p_right = _np.clip(plick, 0, None) if plick is not None else None
+        p_left = _np.clip(-plick, 0, None) if plick is not None else None
+        rows.append(("plot_thr", time_vect, p_right, "P(Lick) droite"))
+        rows.append(("plot_thr", time_vect, p_left, "P(Lick) gauche"))
+    else:
+        rows.append(("plot", time_vect, plick, "P(Lick)"))
 
-    rows += [
-        ("plot", time_vect, plick,  "P(Lick)"),
-        ("step", time_vect, lick,   "Lick"),
-        ("stem", time_vect, reward, "Reward"),
-    ]
+    rows.append(("step", time_vect, lick, "Lick"))
+    rows.append(("stem", time_vect, reward, "Reward"))
 
     if stim is not None and _np.any(stim):
         rows.append(("plot", time_vect, stim, "Stim"))
@@ -159,7 +182,11 @@ def plot_traces(time_vect,
     # (evite qu'un auto-scale sur une toute petite variation ne trompe la lecture)
     fixed_ylim = {
         "Expectation": (0.0, 1.0),
+        "Expectation droite": (0.0, 1.0),
+        "Expectation gauche": (0.0, 1.0),
         "Expectation No-Go": (0.0, 1.0),
+        "Expectation No-Go droite": (0.0, 1.0),
+        "Expectation No-Go gauche": (0.0, 1.0),
         "Motivation": (0.0, 1.0),
         "RPE": (-1.05, 1.05),
         "Lick": (-0.05, 1.05),
@@ -173,6 +200,13 @@ def plot_traces(time_vect,
             ax.plot(x, y)
             if label == "P(Lick)":
                 ax.axhline(threshold, linestyle="--", alpha=0.5)
+        elif kind == "plot_side":
+            color = "tab:blue" if "droite" in label else "tab:orange"
+            ax.plot(x, y, color=color, linewidth=0.8)
+        elif kind == "plot_thr":
+            color = "tab:blue" if "droite" in label else "tab:orange"
+            ax.plot(x, y, color=color, linewidth=0.8)
+            ax.axhline(threshold, linestyle="--", alpha=0.6, color="gray")
         elif kind == "step":
             ax.step(x, y, where="post")
         elif kind == "stem":
@@ -187,9 +221,7 @@ def plot_traces(time_vect,
     _save_fig(fig, category="traces", name=save_name or title)
 
 
-# =====================================================================
 # Value / Cost par trial (brut) + moyenne glissante (expected_V, expected_C)
-# =====================================================================
 def plot_value_cost_trials(
     trial_times: List[float],
     v_trials: List[float],
@@ -222,9 +254,7 @@ def plot_value_cost_trials(
     _save_fig(fig, category="traces", name=save_name or title)
 
 
-# =====================================================================
 # HR & FA moyens par session (liste)
-# =====================================================================
 def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
                              labels: List[str],
                              title: str = "HR & FA average per session",
@@ -268,18 +298,17 @@ def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
     _save_fig(fig, category="learning_curve", name=save_name or title)
 
 
-# =====================================================================
 # HR/FA par blocs à l’intérieur d’une session
-# =====================================================================
 def plot_wdt_block_rates(performance: np.ndarray,
                          wdt_params,
                          max_trials: int = 400,
                          title: str = "",
-                         save_name: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                         save_name: Optional[str] = None,
+                         dual_stim: bool = False):
     """
-    performance: np.ndarray renvoyé par function_performance_wdt
-                 colonnes = [t, stim_amp, lick_detected, latency, reward_detected, outcome]
-                 outcome: 0=Miss, 1=Hit, 2=CR, 3=FA
+    performance: np.ndarray renvoyé par function_performance_wdt (ou function_performance_wdt_dual)
+                 colonnes = [t, stim_amp, lick_detected, latency, reward_detected, outcome, ...]
+                 outcome: 0=Miss, 1=Hit, 2=CR, 3=FA (+ 4=Mismatch si dual_stim)
     wdt_params: WDTSesssionParams (utilise .block_numb)
     max_trials: borne X (ex: 400)
     """
@@ -290,11 +319,12 @@ def plot_wdt_block_rates(performance: np.ndarray,
     block = max(1, int(getattr(wdt_params, "block_numb", 5)))
 
     xs, hrs, fas = [], [], []
+    mismatches = [] if dual_stim else None
     for start in range(0, n, block):
         end = min(start + block, n)
         blk = performance[start:end, :]
 
-        stim_mask = blk[:, 1] > 0
+        stim_mask = (blk[:, 1] != 0) if dual_stim else (blk[:, 1] > 0)
         catch_mask = ~stim_mask
 
         stim_cnt = int(np.sum(stim_mask))
@@ -309,8 +339,14 @@ def plot_wdt_block_rates(performance: np.ndarray,
         xs.append(start + (end - start) / 2.0)
         hrs.append(hr); fas.append(far)
 
+        if dual_stim:
+            mm = int(np.sum((blk[:, 5] == 4) & stim_mask))
+            mismatches.append(mm / stim_cnt if stim_cnt > 0 else np.nan)
+
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(xs, hrs, linestyle="None", marker="x", label="Hit rate (block)")
+    if dual_stim:
+        ax.plot(xs, mismatches, linestyle="None", marker="^", label="Mismatch (block)")
     ax.plot(xs, fas, linestyle="None", marker="o", label="False alarm (block)")
     ax.set_xlim(0, max_trials); ax.set_ylim(0, 1)
     ax.set_xlabel("Trial # (stim & catch)"); ax.set_ylabel("P(Lick)")
@@ -318,12 +354,12 @@ def plot_wdt_block_rates(performance: np.ndarray,
     ax.grid(True, alpha=0.3); ax.legend()
     plt.tight_layout(); _save_fig(fig, category="block_rates", name=save_name or title or "block_rates")
 
+    if dual_stim:
+        return np.array(xs), np.array(hrs), np.array(fas), np.array(mismatches)
     return np.array(xs), np.array(hrs), np.array(fas)
 
 
-# =====================================================================
 # HR, FA, d′ — utilitaire + courbes vs sessions
-# =====================================================================
 def session_rates(perf: Optional[np.ndarray],
                   zero_when_empty: bool = True) -> Tuple[float, float, float]:
     """
@@ -355,27 +391,88 @@ def session_rates(perf: Optional[np.ndarray],
     return float(hr), float(fa), dprime
 
 
+def session_rates_dual(perf: Optional[np.ndarray],
+                       zero_when_empty: bool = True) -> Tuple[float, float, float, float, float, float]:
+    """
+    Version dual stim de session_rates : Hit Rate separe par cote (droite/gauche), en
+    plus du Mismatch (elle a leche, mauvais cote).
+    perf : colonnes [t, correct_side, lick_detected, latency, reward_detected, outcome, lick_side_detected]
+    outcome : 0=Miss, 1=Hit, 2=CR, 3=FA, 4=Mismatch ; correct_side : +1=droite, -1=gauche, 0=catch
+    Retourne (hr, hr_droite, hr_gauche, mismatch, fa, d′). hr = les deux cotes combines
+    (garde le meme sens qu'avant, utile pour le calcul du d′).
+    """
+    empty = (0.0, 0.0, 0.0, 0.0, 0.0, np.nan) if zero_when_empty else (np.nan,) * 5 + (np.nan,)
+    if perf is None or not isinstance(perf, np.ndarray) or perf.size == 0:
+        return empty
+
+    stim_mask = perf[:, 1] != 0
+    catch_mask = ~stim_mask
+    right_mask = perf[:, 1] == 1
+    left_mask = perf[:, 1] == -1
+
+    stim_n = int(np.sum(stim_mask))
+    catch_n = int(np.sum(catch_mask))
+    right_n = int(np.sum(right_mask))
+    left_n = int(np.sum(left_mask))
+
+    hits = int(np.sum((perf[:, 5] == 1) & stim_mask))
+    hits_right = int(np.sum((perf[:, 5] == 1) & right_mask))
+    hits_left = int(np.sum((perf[:, 5] == 1) & left_mask))
+    mismatches = int(np.sum((perf[:, 5] == 4) & stim_mask))
+    fas = int(np.sum((perf[:, 5] == 3) & catch_mask))
+
+    hr = (hits / stim_n) if stim_n > 0 else (0.0 if zero_when_empty else np.nan)
+    hr_right = (hits_right / right_n) if right_n > 0 else (0.0 if zero_when_empty else np.nan)
+    hr_left = (hits_left / left_n) if left_n > 0 else (0.0 if zero_when_empty else np.nan)
+    mismatch = (mismatches / stim_n) if stim_n > 0 else (0.0 if zero_when_empty else np.nan)
+    fa = (fas / catch_n) if catch_n > 0 else (0.0 if zero_when_empty else np.nan)
+
+    if stim_n == 0 or catch_n == 0 or np.isnan(hr) or np.isnan(fa):
+        dprime = float(np.nan)
+    else:
+        hr_corr = min(max(float(hr), 0.01), 0.99)
+        fa_corr = min(max(float(fa), 0.01), 0.99)
+        nd = NormalDist()
+        dprime = float(nd.inv_cdf(hr_corr) - nd.inv_cdf(fa_corr))
+
+    return float(hr), float(hr_right), float(hr_left), float(mismatch), float(fa), dprime
+
+
 def plot_session_rates(performance_list: Iterable[Optional[np.ndarray]],
                        session_labels: List[str],
                        title: str = "HR, FA & d′ per session (WDT)",
                        zero_when_empty: bool = True,
                        ax: Optional[plt.Axes] = None,
-                       save_name: Optional[str] = None
-                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                       save_name: Optional[str] = None,
+                       dual_stim: bool = False,
+                      ):
     """
-    X = sessions ; Y (gauche) = P(Lick) pour HR/FA ; Y (droite) = d′.
-    Retourne (xs, hr_arr, fa_arr, dp_arr).
+    X = sessions ; Y (gauche) = P(Lick) pour HR/FA(/Mismatch) ; Y (droite) = d′.
+    En dual_stim, le Hit Rate est separe par cote (droite/gauche) pour reperer un
+    eventuel biais ou une difference de vitesse d'apprentissage entre les deux.
+    Retourne (xs, hr_arr, fa_arr, dp_arr), ou (xs, hr_arr, fa_arr, dp_arr, mismatch_arr,
+    hr_right_arr, hr_left_arr) si dual_stim.
     """
     perfs = list(performance_list)
     if len(session_labels) != len(perfs):
         raise ValueError("session_labels doit avoir la même longueur que performance_list.")
 
-    rates: List[Tuple[float, float, float]] = [
-        session_rates(p, zero_when_empty=zero_when_empty) for p in perfs
-    ]
-    hr_arr = np.array([hr for hr, _, _ in rates], dtype=float)
-    fa_arr = np.array([fa for _, fa, _ in rates], dtype=float)
-    dp_arr = np.array([dp for _, _, dp in rates], dtype=float)
+    if dual_stim:
+        rates = [session_rates_dual(p, zero_when_empty=zero_when_empty) for p in perfs]
+        hr_arr = np.array([r[0] for r in rates], dtype=float)
+        hr_right_arr = np.array([r[1] for r in rates], dtype=float)
+        hr_left_arr = np.array([r[2] for r in rates], dtype=float)
+        mismatch_arr = np.array([r[3] for r in rates], dtype=float)
+        fa_arr = np.array([r[4] for r in rates], dtype=float)
+        dp_arr = np.array([r[5] for r in rates], dtype=float)
+    else:
+        rates: List[Tuple[float, float, float]] = [
+            session_rates(p, zero_when_empty=zero_when_empty) for p in perfs
+        ]
+        hr_arr = np.array([hr for hr, _, _ in rates], dtype=float)
+        fa_arr = np.array([fa for _, fa, _ in rates], dtype=float)
+        dp_arr = np.array([dp for _, _, dp in rates], dtype=float)
+
     xs = np.arange(1, len(perfs) + 1)
 
     created_fig = False
@@ -383,7 +480,12 @@ def plot_session_rates(performance_list: Iterable[Optional[np.ndarray]],
         fig, ax = plt.subplots(figsize=(9, 5))
         created_fig = True
 
-    ax.plot(xs, hr_arr, linestyle="None", marker="x", label="Hit rate")
+    if dual_stim:
+        ax.plot(xs, hr_right_arr, linestyle="None", marker="x", color="tab:blue", label="Hit rate droite")
+        ax.plot(xs, hr_left_arr, linestyle="None", marker="x", color="tab:orange", label="Hit rate gauche")
+        ax.plot(xs, mismatch_arr, linestyle="None", marker="^", color="tab:red", label="Mismatch")
+    else:
+        ax.plot(xs, hr_arr, linestyle="None", marker="x", label="Hit rate")
     ax.plot(xs, fa_arr, linestyle="None", marker="o", label="False alarm")
     ax.set_ylim(0, 1); ax.set_xticks(xs); ax.set_xticklabels(session_labels)
     ax.set_xlabel("Sessions"); ax.set_ylabel("P(Lick)")
@@ -400,33 +502,45 @@ def plot_session_rates(performance_list: Iterable[Optional[np.ndarray]],
     if created_fig:
         plt.tight_layout(); _save_fig(fig, category="learning_curve", name=save_name or title)
 
+    if dual_stim:
+        return xs, hr_arr, fa_arr, dp_arr, mismatch_arr, hr_right_arr, hr_left_arr
     return xs, hr_arr, fa_arr, dp_arr
 
 
-# =====================================================================
 # Plots compacts (une session / multi-souris)
-# =====================================================================
 def plot_single_session_rates(
     perf: Optional[np.ndarray],
     title: str = "HR vs FA (session)",
     zero_when_empty: bool = True,
     ax: Optional[plt.Axes] = None,
     save_name: Optional[str] = None,
-) -> Tuple[float, float, float]:
-    """Plot compact pour UNE session (HR & FA) + d′ en légende."""
-    hr, fa, dprime = session_rates(perf, zero_when_empty=zero_when_empty)
+    dual_stim: bool = False,
+):
+    """Plot compact pour UNE session (HR & FA, + HR par cote et Mismatch si dual_stim) + d′ en légende."""
+    if dual_stim:
+        hr, hr_right, hr_left, mismatch, fa, dprime = session_rates_dual(perf, zero_when_empty=zero_when_empty)
+    else:
+        hr, fa, dprime = session_rates(perf, zero_when_empty=zero_when_empty)
 
     created_fig = False
     if ax is None:
         fig, ax = plt.subplots(figsize=(5, 4))
         created_fig = True
 
-    xs = np.array([1, 2], dtype=float)
-    ax.plot([xs[0]], [hr], linestyle="None", marker="x", label="HR")
-    ax.plot([xs[1]], [fa], linestyle="None", marker="o", label="FA")
+    if dual_stim:
+        xs = np.array([1, 2, 3, 4], dtype=float)
+        ax.plot([xs[0]], [hr_right], linestyle="None", marker="x", color="tab:blue", label="HR droite")
+        ax.plot([xs[1]], [hr_left], linestyle="None", marker="x", color="tab:orange", label="HR gauche")
+        ax.plot([xs[2]], [mismatch], linestyle="None", marker="^", color="tab:red", label="Mismatch")
+        ax.plot([xs[3]], [fa], linestyle="None", marker="o", label="FA")
+        ax.set_xticks(xs); ax.set_xticklabels(["HR droite", "HR gauche", "Mismatch", "FA"])
+    else:
+        xs = np.array([1, 2], dtype=float)
+        ax.plot([xs[0]], [hr], linestyle="None", marker="x", label="HR")
+        ax.plot([xs[1]], [fa], linestyle="None", marker="o", label="FA")
+        ax.set_xticks(xs); ax.set_xticklabels(["HR", "FA"])
 
     ax.set_ylim(0, 1)
-    ax.set_xticks(xs); ax.set_xticklabels(["HR", "FA"])
     ax.set_ylabel("P(Lick)"); ax.set_title(title)
 
     dprime_txt = f"d′ = {dprime:.2f}" if not np.isnan(dprime) else "d′ : n/a"
@@ -438,6 +552,8 @@ def plot_single_session_rates(
     if created_fig:
         plt.tight_layout(); _save_fig(fig, category="session_summary", name=save_name or title)
 
+    if dual_stim:
+        return float(hr), float(hr_right), float(hr_left), float(mismatch), float(fa), float(dprime)
     return float(hr), float(fa), float(dprime)
 
 
@@ -563,9 +679,7 @@ def overlay_group_stats_on_current_axes(hr_arr: np.ndarray,
             ax.set_title(f"Session: {session_name}")
 
 
-# =====================================================================
 # RPE par lick (scatter)
-# =====================================================================
 def plot_rpe_per_lick(rpe_table: np.ndarray,
                       title: str = "RPE per lick",
                       ax: Optional[plt.Axes] = None,
@@ -813,9 +927,7 @@ def plot_population_hr_fa(
     return hr_arr, fa_arr, dp_arr
 
 
-# =====================================================================
 # Fichier texte recapitulatif des parametres numeriques de la simulation
-# =====================================================================
 def save_parameters_txt(
     rows: List[Tuple[str, Optional[object]]],
     filename: str = "parameters.txt",
