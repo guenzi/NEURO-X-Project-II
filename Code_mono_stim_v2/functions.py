@@ -38,6 +38,10 @@ from plotting import (
     init_results_dir,
     _save_fig,
     session_rates_dual,
+    plot_wdt_block_rates_wa,
+    plot_session_rates_wa,
+    plot_single_session_rates_wa,
+    plot_stim_gains,
 )
 
 
@@ -637,6 +641,7 @@ def initialization(config: SimConfig) -> tuple[SessionBaseInfo, Mouse]:
         ("VCvary" if config.VC_VARY else f"V{config.REWARD_VALUE:g}_C{config.COST:g}")
         + f"_wdtThrs{config.LICK_THRS_WDT:g}"
         + ("_dualstim" if config.dual_stim else "")
+        + ("_whiskAud" if config.WHISKER_AUD_STIM else "")
         + ("_delearn" if config.DELEARNING else "")
     )
     init_results_dir(suffix=suffix)
@@ -1033,6 +1038,435 @@ def save_run_parameters(config: SimConfig, mouse: Mouse, session_info: SessionBa
         ("Number of mice", config.N_MICE),
         ("Noise gain", config.NOISE_GAIN),
         ("Stimulus learning rate", config.LEARNING_STIM),
+    ]
+
+    save_parameters_txt(param_rows)
+
+
+# Dual whisker/auditif : reprend le paradigme historique (switch de contingence WDT->AUD)
+# mais avec UNE SEULE Expectation partagee (comme le mono), alimentee par deux canaux de
+# stimulus, chacun avec son propre gain Go et son propre gain No-Go (desapprentissage
+# specifique au stimulus). Rien ci-dessus n'est modifie ; ces fonctions sont utilisees a la
+# place des precedentes uniquement quand config.WHISKER_AUD_STIM=True (voir main.py).
+# function_mouse_lick et function_fl_session (mono, inchangees) sont reutilisees telles
+# quelles : la decision et le Free Licking ne dependent jamais du nombre de canaux de
+# stimulus, seule la session WDT/AUD en a un.
+
+def function_update_mouse_state_wa(
+    mouse: Mouse,
+    mouse_session: MouseSessionState,
+    session_info: SessionBaseInfo,
+    i: int,
+    stim1_t: float,
+    stim2_t: float,
+    reward_t: float,
+) -> tuple[Mouse, MouseSessionState]:
+    """
+    Comme function_update_mouse_state (mono), etendue a DEUX canaux de stimulus qui
+    alimentent la MEME Expectation partagee. Motivation, RPE, Uncertainty, E_nogo generale
+    et la mise a jour reward/no-reward de `expectation` sont identiques au mono (memes
+    lignes) ; seule la section stimulus change (stim1_t/stim2_t au lieu de stim_t).
+    """
+    t = i * session_info.resolution
+    time_vector = session_info.time_vector
+
+    if reward_t > 0:
+        mouse_session.motivation[i, 0] = (
+            mouse_session.motivation[i - 1, 0] - mouse.motivation[1] * reward_t
+        )
+    else:
+        mouse_session.motivation[i, 0] = mouse_session.motivation[i - 1, 0]
+
+    rpe_t = reward_t - mouse_session.expectation[i - 1, 0]
+    mouse_session.rpe[i, 0] = rpe_t
+
+    mouse_session.uncertainty[i, 0] = mouse_session.uncertainty[i - 1, 0]
+    if mouse_session.lick[i - 1, 0] == 1 or reward_t > 0:
+        u_prev = mouse_session.uncertainty[i - 1, 0]
+        u_new = u_prev + mouse.uncertainty_gain * (2.0 * abs(rpe_t) - 1.0) ** 3
+        mouse_session.uncertainty[i, 0] = float(np.clip(u_new, 0.0, mouse.uncertainty_max))
+
+    # E_nogo generale : identique au mono, capte l'impulsivite independamment du stimulus.
+    if mouse.delearning_enable:
+        tau_nogo, gain_nogo = mouse.exp_update_nogo
+        decay = np.exp(-session_info.resolution / tau_nogo)
+        e_nogo_new = mouse_session.expectation_nogo[i - 1, 0] * decay
+
+        is_new_unrewarded_bout = (
+            reward_t == 0
+            and mouse_session.lick[i - 1, 0] == 1
+            and (i < 2 or mouse_session.lick[i - 2, 0] == 0)
+        )
+        if is_new_unrewarded_bout:
+            e_nogo_new = e_nogo_new + gain_nogo * (1.0 - e_nogo_new)
+        if reward_t > 0:
+            e_nogo_new = e_nogo_new * (1.0 - mouse.nogo_relief)
+        mouse_session.expectation_nogo[i, 0] = float(np.clip(e_nogo_new, 0.0, 1.0))
+
+    if reward_t > 0:
+        update = (
+            rpe_t
+            * mouse.exp_update_reward[1]
+            * np.exp(-np.maximum(time_vector - t, 0.0) / mouse.exp_update_reward[0])
+        )
+        mouse_session.expectation[i:, 0] += update[i:]
+        mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
+
+    if reward_t == 0 and mouse_session.lick[i - 1, 0] == 1:
+        update = (
+            rpe_t
+            * mouse.exp_update_no_reward[1]
+            * np.exp(-np.maximum(time_vector - t, 0.0) / mouse.exp_update_no_reward[0])
+        )
+        mouse_session.expectation[i:, 0] += update[i:]
+        mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
+        mouse_session.non_rew_lick_cnt += 1
+    elif reward_t > 0 and mouse_session.lick[i - 1, 0] == 1:
+        mouse_session.non_rew_lick_cnt = 0
+
+    # --- Contribution des DEUX stimuli a l'Expectation partagee -----------------------------
+    if stim1_t > 0.0 or stim2_t > 0.0:
+        tau1, gain1_go = mouse.exp_update_stim1_wa
+        tau2, gain2_go = mouse.exp_update_stim2_wa
+        net_gain1 = gain1_go - (mouse.stim1_nogo_gain_wa if mouse.delearning_enable else 0.0)
+        net_gain2 = gain2_go - (mouse.stim2_nogo_gain_wa if mouse.delearning_enable else 0.0)
+
+        if stim1_t > 0.0:
+            update_exp1 = stim1_t * net_gain1 * np.exp(-np.maximum(time_vector - t, 0.0) / tau1)
+            mouse_session.expectation[i:, 0] += update_exp1[i:]
+            update_elig1 = stim1_t * np.exp(-np.maximum(time_vector - t, 0.0) / mouse.tau_eligibility)
+            mouse_session.eligibility1[i:, 0] += update_elig1[i:]
+            mouse_session.eligibility1 = np.clip(mouse_session.eligibility1, 0, 1)
+
+        if stim2_t > 0.0:
+            update_exp2 = stim2_t * net_gain2 * np.exp(-np.maximum(time_vector - t, 0.0) / tau2)
+            mouse_session.expectation[i:, 0] += update_exp2[i:]
+            update_elig2 = stim2_t * np.exp(-np.maximum(time_vector - t, 0.0) / mouse.tau_eligibility)
+            mouse_session.eligibility2[i:, 0] += update_elig2[i:]
+            mouse_session.eligibility2 = np.clip(mouse_session.eligibility2, 0, 1)
+
+        mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
+
+    if mouse_session.non_rew_lick_cnt >= mouse.learning_nonrew_lick[0]:
+        old_tau, gain = mouse.exp_update_no_reward
+        mouse.exp_update_no_reward = (old_tau + mouse.learning_nonrew_lick[1], gain)
+        mouse_session.non_rew_lick_cnt = 0
+
+    # --- Apprentissage des gains Go, a la recompense ----------------------------------------
+    if reward_t > 0.0:
+        elig1 = float(mouse_session.eligibility1[i, 0])
+        elig2 = float(mouse_session.eligibility2[i, 0])
+        tau1, g1 = mouse.exp_update_stim1_wa
+        tau2, g2 = mouse.exp_update_stim2_wa
+        g1_new = g1 + rpe_t * mouse.learning_stim_wa * elig1
+        g2_new = g2 + rpe_t * mouse.learning_stim_wa * elig2
+        mouse.exp_update_stim1_wa = (tau1, float(np.clip(g1_new, 0.0, mouse.stim_gain_max_wa)))
+        mouse.exp_update_stim2_wa = (tau2, float(np.clip(g2_new, 0.0, mouse.stim_gain_max_wa)))
+
+    # --- Desapprentissage SPECIFIQUE au stimulus (No-Go), au lick non recompense -----------
+    if mouse.delearning_enable and reward_t == 0.0 and mouse_session.lick[i - 1, 0] == 1:
+        elig1 = float(mouse_session.eligibility1[i, 0])
+        elig2 = float(mouse_session.eligibility2[i, 0])
+        mouse.stim1_nogo_gain_wa = float(np.clip(
+            mouse.stim1_nogo_gain_wa + (-rpe_t) * mouse.learning_stim_nogo_wa * elig1, 0.0, mouse.stim_gain_max_wa))
+        mouse.stim2_nogo_gain_wa = float(np.clip(
+            mouse.stim2_nogo_gain_wa + (-rpe_t) * mouse.learning_stim_nogo_wa * elig2, 0.0, mouse.stim_gain_max_wa))
+
+    return mouse, mouse_session
+
+
+def function_wdt_session_wa(
+    session_param: WDTSesssionParams,
+    wdt_session: WDTSesssionState,
+    session_info: SessionBaseInfo,
+    lick: int,
+    i: int,
+) -> tuple[float, float, float, WDTSesssionState, bool]:
+    """Comme function_wdt_session (mono), avec 3 types de trial (0=catch, 1=whisker,
+    2=auditif) au lieu de 2. Seul un lick pendant la fenetre de reponse ET dont le type de
+    trial correspond a `session_param.reward_stim` est recompense — un lick sur l'AUTRE
+    stimulus n'est jamais recompense, exactement comme un lick de catch trial."""
+    t = i * session_info.resolution
+    reward = 0.0
+    stim1 = 0.0
+    stim2 = 0.0
+    new_trial = False
+
+    if (
+        (t - wdt_session.last_lick_time) > wdt_session.no_lick_wind
+        and (t - wdt_session.last_trial_time) > wdt_session.iti
+    ):
+        wdt_session.trial_times.append(t)
+        wdt_session.last_trial_time = t
+        wdt_session.no_lick_wind = sample_uniform_range(*session_param.no_lick_wind)
+        wdt_session.iti = sample_uniform_range(*session_param.iti)
+        new_trial = True
+
+        kind = random.choice(session_param.trial_kinds)
+        wdt_session.last_trial_kind = int(kind)
+
+        if kind == 1:
+            stim1 = session_param.stim1_amp
+            wdt_session.last_stim_time = t
+        elif kind == 2:
+            stim2 = session_param.stim2_amp
+            wdt_session.last_stim_time = t
+
+        if kind in (1, 2):
+            window_length = int(round(session_param.response_wind / session_info.resolution))
+            end_idx = min(i + window_length, session_info.number_bin)
+            wdt_session.reward_window[i + 1:end_idx, 0] = 1
+
+    if lick == 1:
+        wdt_session.last_lick_time = t
+        if (
+            wdt_session.reward_window[i, 0] > 0.5
+            and (t - wdt_session.last_reward_time) > 2
+        ):
+            if wdt_session.last_trial_kind == session_param.reward_stim:
+                if random.random() <= session_param.reward_prob:
+                    reward = session_param.reward_size
+                    wdt_session.last_reward_time = t
+
+    wdt_session.reward[i, 0] = reward
+    if stim1 > 0:
+        wdt_session.stim1[i, 0] = stim1
+    if stim2 > 0:
+        wdt_session.stim2[i, 0] = stim2
+
+    return reward, stim1, stim2, wdt_session, new_trial
+
+
+def function_performance_wdt_wa(
+    wdt_params: WDTSesssionParams,
+    session_info: SessionBaseInfo,
+    wdt_session: WDTSesssionState,
+    mouse_session: MouseSessionState,
+) -> np.ndarray:
+    """Comme function_performance_wdt (mono), avec une colonne stim_code (0/1/2) au lieu
+    d'une amplitude, pour calculer un Hit Rate separe par stimulus (plot_session_rates_wa
+    s'en sert pour montrer le switch de contingence)."""
+    sr = int(round(1 / session_info.resolution))
+    trials = [t for t in wdt_session.trial_times if t < (session_info.duration * 60 - wdt_params.response_wind)]
+
+    performance = []
+    for t in trials:
+        pt1 = int(round(t * sr))
+        pt2 = min(pt1 + int(round(wdt_params.response_wind * sr)), session_info.number_bin)
+
+        s1 = float(np.max(wdt_session.stim1[pt1:pt2, 0]))
+        s2 = float(np.max(wdt_session.stim2[pt1:pt2, 0]))
+        stim_code = 1.0 if s1 > 0.0 else (2.0 if s2 > 0.0 else 0.0)
+
+        lick_segment = mouse_session.lick[pt1:pt2, 0]
+        reward_segment = wdt_session.reward[pt1:pt2, 0]
+
+        lick_detected = bool(np.any(lick_segment))
+        reward_detected = bool(np.any(reward_segment))
+        latency = float(np.argmax(lick_segment) / sr) if lick_detected else float("nan")
+
+        if stim_code > 0 and not lick_detected:
+            outcome = 0  # Miss
+        elif stim_code > 0 and lick_detected:
+            outcome = 1  # Hit
+        elif stim_code == 0 and not lick_detected:
+            outcome = 2  # Correct Rejection
+        else:
+            outcome = 3  # False Alarm
+
+        performance.append([t, stim_code, int(lick_detected), latency, int(reward_detected), outcome])
+
+    return np.array(performance, dtype=float)
+
+
+def run_wdt_session_wa(
+    mouse: Mouse,
+    session_info: SessionBaseInfo,
+    config: SimConfig,
+    wdt_params: WDTSesssionParams,
+    prev_mouse_session: MouseSessionState,
+    prev_reward: np.ndarray,
+    label: str,
+) -> WDTRunResult:
+    """Corps d'une session WDT/AUD (whisker/auditif, une seule Expectation partagee)."""
+    lick_sum = float(np.sum(prev_mouse_session.lick))
+    reward_sum = float(np.sum(prev_reward))
+    init_expect = (reward_sum / lick_sum) if lick_sum > 0 else 0.0
+    init_uncert = float(prev_mouse_session.uncertainty[-1, 0])
+    init_nogo = float(prev_mouse_session.expectation_nogo[-1, 0])
+
+    wdt_session = WDTSesssionState()
+    wdt_session.initialize(session_info.number_bin, wdt_params.no_lick_wind, wdt_params.iti)
+    mouse_session = MouseSessionState()
+    mouse_session.initialize(session_info.number_bin, mouse.motivation[0], init_expect, init_uncert, init_nogo)
+
+    for i in range(1, session_info.number_bin):
+        reward_t, s1, s2, wdt_session, _ = function_wdt_session_wa(
+            wdt_params, wdt_session, session_info, int(mouse_session.lick[i - 1, 0]), i
+        )
+        _, mouse_session = function_mouse_lick(
+            mouse, mouse_session, i, threshold=mouse.lick_thrs_wdt, decision_slope=mouse.decision_slope_wdt
+        )
+        mouse, mouse_session = function_update_mouse_state_wa(mouse, mouse_session, session_info, i, s1, s2, reward_t)
+
+    perf = function_performance_wdt_wa(wdt_params, session_info, wdt_session, mouse_session)
+
+    return WDTRunResult(
+        label=label, session=wdt_session, mouse_session=mouse_session, perf=perf,
+        stim1_gain=float(mouse.exp_update_stim1_wa[1]), stim2_gain=float(mouse.exp_update_stim2_wa[1]),
+        stim1_nogo_gain=float(mouse.stim1_nogo_gain_wa), stim2_nogo_gain=float(mouse.stim2_nogo_gain_wa),
+    )
+
+
+def run_all_wdt_wa(mouse: Mouse, session_info: SessionBaseInfo, config: SimConfig, log_fl2: FLSessionResult) -> WDTBundle:
+    """Enchaine WA1..WA{config.WA_NUM_SESSIONS}. Sessions 1..WA_SWITCH_SESSION-1 : stim1
+    (whisker) recompense, etiquette "WDT{k}". Sessions WA_SWITCH_SESSION..fin : stim2
+    (auditif) recompense, etiquette "AUD{k}" — paradigme historique du projet."""
+    bundle = WDTBundle()
+    prev_mouse_session = log_fl2.mouse_session
+    prev_reward = log_fl2.session.reward
+
+    for s_idx in range(1, config.WA_NUM_SESSIONS + 1):
+        wdt_params = WDTSesssionParams(
+            trial_kinds=config.WA_TRIAL_KINDS[:],
+            stim1_amp=config.WA_STIM1_AMP,
+            stim2_amp=config.WA_STIM2_AMP,
+            reward_stim=1 if s_idx < config.WA_SWITCH_SESSION else 2,
+        )
+        label = f"WDT{s_idx}" if s_idx < config.WA_SWITCH_SESSION else f"AUD{s_idx}"
+        result = run_wdt_session_wa(mouse, session_info, config, wdt_params, prev_mouse_session, prev_reward, label)
+
+        if result.perf.size > 0:
+            s1_mask = result.perf[:, 1] == 1
+            s2_mask = result.perf[:, 1] == 2
+            catch_mask = result.perf[:, 1] == 0
+            hr1 = (np.sum((result.perf[:, 5] == 1) & s1_mask) / np.sum(s1_mask)) if np.sum(s1_mask) > 0 else 0.0
+            hr2 = (np.sum((result.perf[:, 5] == 1) & s2_mask) / np.sum(s2_mask)) if np.sum(s2_mask) > 0 else 0.0
+            fa = (np.sum((result.perf[:, 5] == 3) & catch_mask) / np.sum(catch_mask)) if np.sum(catch_mask) > 0 else 0.0
+        else:
+            hr1, hr2, fa = 0.0, 0.0, 0.0
+
+        print(f"Hit Rate {label} : stim1(whisker)={hr1:.2f}  stim2(auditif)={hr2:.2f}  FA={fa:.2f}"
+              f"  |  gains go(stim1,stim2)=({result.stim1_gain:.3f},{result.stim2_gain:.3f})"
+              + (f"  nogo(stim1,stim2)=({result.stim1_nogo_gain:.3f},{result.stim2_nogo_gain:.3f})" if config.DELEARNING else ""))
+
+        bundle.results.append(result)
+        bundle.labels.append(label)
+
+        prev_mouse_session = result.mouse_session
+        prev_reward = result.session.reward
+
+    return bundle
+
+
+def plot_all_results_wa(
+    session_info: SessionBaseInfo,
+    mouse: Mouse,
+    config: SimConfig,
+    log_fl1: FLSessionResult,
+    log_fl2: FLSessionResult,
+    wdt_bundle: WDTBundle,
+) -> None:
+    """Version whisker/auditif de plot_all_results (mono) : reutilise plot_traces (mono,
+    en passant les deux canaux stim1/stim2), plus les plots dedies HR(stim1/stim2)/FA."""
+
+    if config.PLOT_TRACES:
+        plot_traces(session_info.time_vector, log_fl1.mouse_session, log_fl1.session.reward,
+                    stim_array=None, title="Free Licking — Session 1",
+                    save_name="free_licking_1", threshold=mouse.lick_thrs)
+        plot_traces(session_info.time_vector, log_fl2.mouse_session, log_fl2.session.reward,
+                    stim_array=None, title="Free Licking — Session 2",
+                    save_name="free_licking_2", threshold=mouse.lick_thrs)
+        for lbl, result in zip(wdt_bundle.labels, wdt_bundle.results):
+            plot_traces(session_info.time_vector, result.mouse_session, result.session.reward,
+                        stim_array=result.session.stim1, stim2_array=result.session.stim2,
+                        title=f"Two-Stimulus Detection — {lbl}",
+                        save_name=lbl.lower(), threshold=mouse.lick_thrs_wdt)
+
+    if config.PLOT_BLOCK_HRFA:
+        _wdt_params = WDTSesssionParams()
+        for lbl, result in zip(wdt_bundle.labels, wdt_bundle.results):
+            plot_wdt_block_rates_wa(result.perf, _wdt_params, max_trials=config.MAX_TRIALS_BLOCKS,
+                                    title=f"{lbl} — HR (stim1/stim2) & FA by block", save_name=lbl.lower())
+
+    if config.PLOT_SESSIONS_COMPARISON:
+        wdt_perfs = [r.perf for r in wdt_bundle.results]
+        plot_session_rates_wa(wdt_perfs, wdt_bundle.labels,
+                              title="Learning — HR(stim1/stim2) & FA(catch) across sessions",
+                              save_name="hr_fa_all_sessions_wa", switch_session=config.WA_SWITCH_SESSION)
+
+    if config.PLOT_SINGLE_SESSION_ALL:
+        for lbl, result in zip(wdt_bundle.labels, wdt_bundle.results):
+            plot_single_session_rates_wa(result.perf, title=f"{lbl} — HR(stim1/stim2) vs FA", save_name=lbl.lower())
+
+    plot_stim_gains(wdt_bundle, config, title="Evolution des gains de stimuli (Go — No-Go)",
+                    save_name="stim_gains_evolution")
+
+    if config.PLOT_RPE_ALL:
+        tbl_fl1 = extract_rpe_per_lick(log_fl1.mouse_session, log_fl1.session.reward, None, session_info)
+        plot_rpe_per_lick(tbl_fl1, title="FL1 — RPE per lick", save_name="free_licking_1_rpe")
+        tbl_fl2 = extract_rpe_per_lick(log_fl2.mouse_session, log_fl2.session.reward, None, session_info)
+        plot_rpe_per_lick(tbl_fl2, title="FL2 — RPE per lick", save_name="free_licking_2_rpe")
+        for lbl, result in zip(wdt_bundle.labels, wdt_bundle.results):
+            stim_vis = result.session.stim1 + 2.0 * result.session.stim2
+            tbl = extract_rpe_per_lick(result.mouse_session, result.session.reward, stim_vis, session_info)
+            plot_rpe_per_lick(tbl, title=f"{lbl} — RPE per lick", save_name=f"{lbl.lower()}_rpe")
+
+    if config.PLOT_ABS_RPE_ALL:
+        for lbl, result in zip(wdt_bundle.labels, wdt_bundle.results):
+            stim_vis = result.session.stim1 + 2.0 * result.session.stim2
+            tbl = extract_rpe_per_lick(result.mouse_session, result.session.reward, stim_vis, session_info)
+            plot_abs_rpe_per_lick(tbl, title=f"{lbl} — |RPE| per lick", save_name=f"{lbl.lower()}_abs_rpe")
+
+
+def save_run_parameters_wa(config: SimConfig, mouse: Mouse, session_info: SessionBaseInfo) -> None:
+    """Ecrit parameters.txt pour le mode whisker/auditif — variante de save_run_parameters (mono)."""
+    _ref_mouse = Mouse()
+    _ref_session = SessionBaseInfo()
+    _ref_fl = FreeLickingSessionParams()
+    _ref_wdt = WDTSesssionParams()
+
+    param_rows = [
+        ("SESSION TIMING", None),
+        ("Session duration (min)", _ref_session.duration),
+        ("Time resolution (s)", _ref_session.resolution),
+        ("Number of time bins", _ref_session.number_bin),
+
+        ("MOUSE — NOISE & DECISION", None),
+        ("Noise gamma shape", _ref_mouse.noise[0]),
+        ("Noise gamma scale", _ref_mouse.noise[1]),
+        ("Lick threshold — Free Licking", config.LICK_THRS_FL),
+        ("Lick threshold — WDT/AUD", config.LICK_THRS_WDT),
+
+        ("MOUSE — MOTIVATION", None),
+        ("Motivation (initial)", _ref_mouse.motivation[0]),
+        ("Motivation loss per reward", _ref_mouse.motivation[1]),
+
+        ("MOUSE — VALUE & COST (DECISION GATE: V·M − C)", None),
+        ("Reward value (V)", config.REWARD_VALUE),
+        ("Cost (C)", config.COST),
+
+        ("MOUSE — STIMULI (WHISKER=1, AUDITIF=2)", None),
+        ("Tau (stimulus, s)", _ref_mouse.exp_update_stim1_wa[0]),
+        ("Gain initial (stim1, whisker)", _ref_mouse.exp_update_stim1_wa[1]),
+        ("Gain initial (stim2, auditif)", _ref_mouse.exp_update_stim2_wa[1]),
+        ("Stimulus gain learning rate (Go)", _ref_mouse.learning_stim_wa),
+        ("Stimulus gain learning rate (No-Go)", _ref_mouse.learning_stim_nogo_wa),
+        ("Stimulus gain cap (go et no-go)", _ref_mouse.stim_gain_max_wa),
+        ("Eligibility trace tau (s)", _ref_mouse.tau_eligibility),
+
+        ("MOUSE — DESAPPRENTISSAGE GENERAL (GO/NO-GO)", None),
+        ("Enabled", config.DELEARNING),
+        ("Tau (no-go, s)", config.NOGO_TAU),
+        ("Gain (no-go)", config.NOGO_GAIN),
+        ("Relief (fraction effacee par recompense)", config.NOGO_RELIEF),
+
+        ("TWO-STIMULUS DETECTION TASK (SWITCH DE CONTINGENCE)", None),
+        ("Number of sessions", config.WA_NUM_SESSIONS),
+        ("Sessions recompensant stim1 (whisker)", config.WA_SWITCH_SESSION - 1),
+        ("Sessions recompensant stim2 (auditif)", config.WA_NUM_SESSIONS - config.WA_SWITCH_SESSION + 1),
+        ("Stim1 (whisker) amplitude", config.WA_STIM1_AMP),
+        ("Stim2 (auditif) amplitude", config.WA_STIM2_AMP),
     ]
 
     save_parameters_txt(param_rows)

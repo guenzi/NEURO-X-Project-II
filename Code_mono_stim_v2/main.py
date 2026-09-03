@@ -1,8 +1,15 @@
-# Deroulement : 2 sessions Free Licking + 10 WDT + test psychometrique.
-# Deux modes : dual_stim=False (un seul stimulus, modele valide) ou dual_stim=True
-# (deux stimuli, deux cotes de recompense) selon config.dual_stim, tout en bas.
+# Deroulement : 2 sessions Free Licking + N sessions WDT (+ test psychometrique en mono).
+# Trois modes, mutuellement exclusifs (WHISKER_AUD_STIM a priorite sur dual_stim si les
+# deux sont actives par erreur) :
+#   - dual_stim=False, WHISKER_AUD_STIM=False : un seul stimulus (mono, modele valide).
+#   - dual_stim=True                          : deux stimuli, deux cotes de recompense
+#                                                (deux Expectations independantes, choix de cote).
+#   - WHISKER_AUD_STIM=True                   : deux stimuli (whisker/auditif), UNE SEULE
+#                                                Expectation partagee, switch de contingence
+#                                                WDT->AUD (paradigme historique du projet).
 # Independamment : DELEARNING=True active l'architecture Go/No-Go (desapprentissage),
-# qui fonctionne a l'identique en mono et en dual stim (une voie No-Go par cote en dual).
+# qui fonctionne a l'identique dans les trois modes (une voie No-Go par cote en dual
+# gauche/droite, une voie No-Go par stimulus en whisker/auditif, une voie generale en mono).
 
 from models import SimConfig
 from functions import (
@@ -17,14 +24,28 @@ from functions import (
     run_all_wdt_dualstim,
     run_wdt_test_dualstim,
     plot_all_results_dualstim,
+    run_all_wdt_wa,
+    plot_all_results_wa,
     save_run_parameters,
+    save_run_parameters_wa,
 )
 
-config = SimConfig(dual_stim=True, DELEARNING=False)
+config = SimConfig(WHISKER_AUD_STIM=True, DELEARNING=True)
 
 session_info, mouse = initialization(config)
 
-if config.dual_stim:
+if config.WHISKER_AUD_STIM:
+    log_fl1 = run_FL1(mouse, session_info, config)      # FL n'a pas de stimulus : la version
+    log_fl2 = run_FL2(mouse, session_info, config, log_fl1)  # mono suffit, rien a adapter.
+
+    wdt_bundle = run_all_wdt_wa(mouse, session_info, config, log_fl2)
+
+    plot_all_results_wa(session_info, mouse, config, log_fl1, log_fl2, wdt_bundle)
+
+    if config.SAVE_PARAMETERS_TXT:
+        save_run_parameters_wa(config, mouse, session_info)
+
+elif config.dual_stim:
     log_fl1 = run_FL1_dualstim(mouse, session_info, config)
     log_fl2 = run_FL2_dualstim(mouse, session_info, config, log_fl1)
 
@@ -32,6 +53,10 @@ if config.dual_stim:
     wdt_test = run_wdt_test_dualstim(mouse, session_info, config, wdt_bundle)
 
     plot_all_results_dualstim(session_info, mouse, config, log_fl1, log_fl2, wdt_bundle, wdt_test)
+
+    if config.SAVE_PARAMETERS_TXT:
+        save_run_parameters(config, mouse, session_info)
+
 else:
     log_fl1 = run_FL1(mouse, session_info, config)
     log_fl2 = run_FL2(mouse, session_info, config, log_fl1)
@@ -41,5 +66,5 @@ else:
 
     plot_all_results(session_info, mouse, config, log_fl1, log_fl2, wdt_bundle, wdt_test)
 
-if config.SAVE_PARAMETERS_TXT:
-    save_run_parameters(config, mouse, session_info)
+    if config.SAVE_PARAMETERS_TXT:
+        save_run_parameters(config, mouse, session_info)
