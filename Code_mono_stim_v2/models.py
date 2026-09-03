@@ -55,28 +55,32 @@ class Mouse:
     uncertainty_gain: float = 0.1               # "A_U": facteur d'echelle de la mise a jour de U, dans [0,1]
     uncertainty_max: float = 1.0                # U_max: borne haute de U (U reste dans [0, U_max])
 
-    # --- Désapprentissage / architecture Go-No-Go (D1R/D2R inspired) -------------------------
-    # Off par défaut : ne change rien au comportement existant tant que delearning_enable=False.
-    # Quand True : en PLUS de la dynamique actuelle de E (inchangée — toujours tirée vers le bas
-    # par exp_update_no_reward à chaque lick non récompensé), une voie séparée `expectation_nogo`
-    # (mono) ou `expectation_nogo_right`/`expectation_nogo_left` (dual, une par côté) accumule un
-    # signal d'inhibition plus lent et plus persistant. La décision utilise alors E - E_nogo
-    # (function_mouse_lick / function_mouse_lick_dual) au lieu de E seule.
-    delearning_enable: bool = False             # active/désactive l'architecture Go/No-Go
-    exp_update_nogo: tuple = (8.0, 0.15)        # (tau, gain) pour la voie No-Go. gain = fraction de
-                                                 # (1 - E_nogo) ajoutée à chaque bout de léchage non
-                                                 # récompensé (kick saturant, borné par construction —
-                                                 # voir function_update_mouse_state). tau = constante de
-                                                 # temps de décroissance entre deux bouts.
-    nogo_relief: float = 0.4                    # fraction de E_nogo effacée à chaque récompense confirmée
-                                                 # (réacquisition rapide) — sans ça, E_nogo ne peut que
-                                                 # monter et finit par saturer et bloquer tout lick.
+    # Architecture Go/No-Go (D1R/D2R), fait partie de la decision de base — pas optionnelle.
+    # En plus de l'Expectation habituelle (E_go, dynamique rapide : monte a la recompense,
+    # redescend a chaque lick non recompense via exp_update_no_reward), une voie separee
+    # E_nogo accumule un signal d'inhibition plus lent et plus persistant. La decision
+    # utilise E_go - E_nogo (function_mouse_lick / function_mouse_lick_dual) au lieu de E_go
+    # seule. Mise a jour comme motivation/uncertainty (recurrence a chaque bin, pas injection
+    # d'un noyau futur) : ce paradigme genere des dizaines de bouts de lechage non recompenses
+    # par seconde une fois la souris confiante, une injection future ferait saturer E_nogo en
+    # quelques secondes. Le kick est saturant (gain*(1-E_nogo), pas +gain) donc borne par
+    # construction.
+    exp_update_nogo: tuple = (8.0, 0.15)        # (tau, gain) pour la voie No-Go (modele mono-stimulus)
+    # Dual stim : tau/gain separes par cote, pour que la sensibilisation (croissance du tau,
+    # voir nogo_streak_incr) declenchee par l'extinction d'un cote ne "fuite" jamais vers
+    # l'autre cote encore recompense. Initialises aux memes valeurs que exp_update_nogo.
+    exp_update_nogo_right: tuple = (8.0, 0.15)
+    exp_update_nogo_left: tuple = (8.0, 0.15)
+    nogo_relief: float = 0.4                    # fraction de E_nogo effacee a chaque reward confirme
+    nogo_streak_incr: tuple = (2, 0.0)          # (seuil de lechages non recompenses consecutifs, increment de tau)
+    nogo_tau_max: float = 8.0                   # plafond du tau_nogo (= tau initial, pas de croissance par defaut)
+                                                 # (reacquisition rapide apres extinction, cf. litterature)
 
-    # Dual stim uniquement (voir function_mouse_lick_dual) : lecture bruitee de la difference
-    # E_droite - E_gauche au lieu d'une comparaison dure. P(cote=droite) = sigmoide(side_readout_slope
-    # * (E_droite-E_gauche)), donc meme quand un cote est tres confiant, il reste une probabilite
-    # residuelle de lire l'autre — pas un mecanisme separe "au cas ou", ca vient de la lecture
-    # elle-meme, comme un decodage bruite d'un code de population neuronal.
+    # Dual stim uniquement (voir function_mouse_lick_dual) : bruit Gumbel independant ajoute
+    # a E_droite et E_gauche separement puis argmax (Gumbel-max trick, echelle 1/side_readout_slope) —
+    # equivalent statistique exact d'une sigmoide sur (E_droite-E_gauche), mais le bruit vit sur
+    # les deux Expectations plutot qu'au moment du choix (comme dans Lak et al. 2020). Donc meme
+    # quand un cote est tres confiant, il reste une probabilite residuelle de lire l'autre.
     side_readout_slope: float = 5.0
 
     # Dual stim uniquement : deux Expectations independantes (droite/gauche), chacune se
@@ -216,6 +220,7 @@ class MouseSessionState:
     eligibility1: np.ndarray = field(default_factory=lambda: np.array([]))  # eligibility whisker
     eligibility2: np.ndarray = field(default_factory=lambda: np.array([]))  # eligibility auditif
     non_rew_lick_cnt: int = 0
+    nogo_streak_cnt: int = 0  # lechages non recompenses consecutifs, pour la sensibilisation du tau No-Go
 
     def initialize(self, session_length: int, init_motivation: float, init_expectation: float = 0.0,
                    init_uncertainty: float = 0.0, init_expectation_nogo: float = 0.0):
@@ -234,6 +239,7 @@ class MouseSessionState:
         # E_nogo persiste aussi entre sessions (meme logique que E et U).
         self.expectation_nogo = np.full((session_length, 1), float(init_expectation_nogo))
         self.non_rew_lick_cnt = 0                                                   # reset non-reward lick counter
+        self.nogo_streak_cnt = 0                                                    # reset No-Go sensitization counter
 
 
 
@@ -288,12 +294,46 @@ class SimConfig:
     LICK_THRS_FL: float = 0.3
     LICK_THRS_WDT: float = 0.40
 
-    # desapprentissage (architecture Go/No-Go) — voir Mouse.delearning_enable pour le detail.
-    # Fonctionne identiquement en mono et en dual stim (une voie No-Go par cote en dual).
-    DELEARNING: bool = False
+    # Architecture Go/No-Go : toujours active dans la decision (voir Mouse.exp_update_nogo),
+    # ces trois valeurs pilotent juste la dynamique de la voie No-Go.
     NOGO_TAU: float = 8.0
     NOGO_GAIN: float = 0.15
     NOGO_RELIEF: float = 0.4
+    # Sensibilisation : le tau (persistance) de la voie No-Go grandit petit a petit apres
+    # des series de lechages non recompenses consecutifs (meme principe que
+    # Mouse.learning_nonrew_lick pour exp_update_no_reward, applique ici a exp_update_nogo).
+    # Plafonne par NOGO_TAU_MAX pour eviter une derive sans fin.
+    NOGO_STREAK_THRESHOLD: int = 4      # nb de bouts non recompenses consecutifs DANS un essai avant increment
+    NOGO_TAU_GROWTH: float = 1.0        # increment de tau_nogo a chaque seuil atteint (0 = desactive)
+    NOGO_TAU_MAX: float = 60.0          # plafond du tau_nogo
+
+    # Desapprentissage integre au pipeline normal (pas un scenario a part) : si renseigne
+    # (ex. 6), la probabilite de reward est forcee a 0 a partir de WDT{ce numero} inclus,
+    # jusqu'a la fin de l'entrainement WDT (WDT_TEST n'est pas concerne). None = comportement
+    # actuel, aucune extinction. Declenche en plus les 3 plots de diagnostic (taux de leche,
+    # E_go vs E_nogo, barres par session) sur le run reel.
+    DELEARNING_FROM_SESSION: Optional[int] = None
+    # Dual stim uniquement : si renseigne (+1 = droite, -1 = gauche), seul ce cote perd sa
+    # recompense a partir de DELEARNING_FROM_SESSION ; l'autre cote continue normalement.
+    # None (par defaut) = comportement existant, les deux cotes perdent la recompense ensemble.
+    DELEARNING_SIDE: Optional[int] = None
+    # Reapprentissage : si renseigne (ex. 8), la recompense revient a la normale (reward_prob=1)
+    # a partir de WDT{ce numero} inclus, sur le(s) cote(s) concerne(s) par DELEARNING_SIDE (ou
+    # les deux si None). None = pas de reapprentissage, l'extinction dure jusqu'a la fin.
+    DELEARNING_UNTIL_SESSION: Optional[int] = None
+
+    # Population : au lieu d'un run normal (avec tous les plots individuels), fait tourner
+    # POPULATION_N_MICE souris dont learning_stim et l'echelle du bruit (mouse.noise[1]) sont
+    # tirees uniformement a +/- POPULATION_PARAM_SPREAD autour des valeurs de base (Mouse()),
+    # puis compare juste leurs courbes d'apprentissage (voir run_population). Pas d'effet si False.
+    POPULATION_RANGE: bool = False
+    POPULATION_N_MICE: int = 10
+    POPULATION_PARAM_SPREAD: float = 0.10
+    # Si True, ignore POPULATION_PARAM_SPREAD et refait tourner la population pour chaque
+    # pourcentage de POPULATION_SWEEP_VALUES (un jeu de plots par pourcentage, le pourcentage
+    # apparait dans le titre et le nom de fichier), toujours dans le meme dossier population/.
+    POPULATION_SPREAD_SWEEP: bool = False
+    POPULATION_SWEEP_VALUES: tuple = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
 
     # deux stimuli / deux cotes (voir les classes Dual* plus bas)
     dual_stim: bool = False
@@ -377,6 +417,10 @@ class DualWDTSessionParams:
     iti: tuple = (6, 12)
     response_wind: float = 1.0
     reward_prob: float = 1.0
+    # Surcharge de reward_prob par cote (None = utilise reward_prob) : permet de couper la
+    # recompense sur un seul cote (desapprentissage cible), l'autre restant a reward_prob.
+    reward_prob_right: Optional[float] = None
+    reward_prob_left: Optional[float] = None
     reward_size: float = 1.0
     trial_kinds: list = field(default_factory=lambda: [0, 1, 2])   # 0=catch, 1=stim droite, 2=stim gauche
     stim_amp: float = 1.0
@@ -451,12 +495,16 @@ class DualMouseSessionState:
     eligibility_right: np.ndarray = field(default_factory=lambda: np.array([]))
     eligibility_left: np.ndarray = field(default_factory=lambda: np.array([]))
     uncertainty: np.ndarray = field(default_factory=lambda: np.array([]))
-    # Desapprentissage (dual) : une voie No-Go independante par cote — memes regles que la
-    # version mono (expectation_nogo), appliquee separement a droite et a gauche pour qu'un
-    # cote qui cesse d'etre recompense s'eteigne sans affecter l'autre.
+    # Voie No-Go independante par cote — memes regles que la version mono (expectation_nogo),
+    # appliquee separement a droite et a gauche pour qu'un cote qui cesse d'etre recompense
+    # s'eteigne sans affecter l'autre.
     expectation_nogo_right: np.ndarray = field(default_factory=lambda: np.array([]))
     expectation_nogo_left: np.ndarray = field(default_factory=lambda: np.array([]))
     non_rew_lick_cnt: int = 0
+    # Compteurs de sensibilisation separes par cote (sinon l'extinction d'un cote ferait
+    # grandir le tau No-Go de l'autre cote encore recompense).
+    nogo_streak_cnt_right: int = 0
+    nogo_streak_cnt_left: int = 0
 
     def initialize(self, session_length: int, init_motivation: float,
                    init_expectation_right: float = 0.0, init_expectation_left: float = 0.0,
@@ -476,3 +524,5 @@ class DualMouseSessionState:
         self.expectation_nogo_right = np.full((session_length, 1), float(init_expectation_nogo_right))
         self.expectation_nogo_left = np.full((session_length, 1), float(init_expectation_nogo_left))
         self.non_rew_lick_cnt = 0
+        self.nogo_streak_cnt_right = 0
+        self.nogo_streak_cnt_left = 0

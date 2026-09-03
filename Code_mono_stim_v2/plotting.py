@@ -145,15 +145,14 @@ def plot_traces(time_vect,
             ("plot_side", time_vect, e_right, "Expectation droite"),
             ("plot_side", time_vect, e_left, "Expectation gauche"),
         ]
-        # Panneaux No-Go seulement s'ils contiennent un signal (delearning_enable=True
-        # quelque part dans la session) — sinon ce serait une ligne plate a 0 inutile.
-        if nogo_right is not None and _np.any(nogo_right):
+        # Architecture Go/No-Go toujours active : les panneaux No-Go sont toujours affiches.
+        if nogo_right is not None:
             rows.append(("plot_side", time_vect, nogo_right, "Expectation No-Go droite"))
-        if nogo_left is not None and _np.any(nogo_left):
+        if nogo_left is not None:
             rows.append(("plot_side", time_vect, nogo_left, "Expectation No-Go gauche"))
     else:
         rows = [("plot", time_vect, expc, "Expectation")]
-        if nogo is not None and _np.any(nogo):
+        if nogo is not None:
             rows.append(("plot", time_vect, nogo, "Expectation No-Go"))
 
     if dual_stim:
@@ -231,6 +230,275 @@ def plot_traces(time_vect,
     fig.suptitle(title)
     fig.tight_layout()
     _save_fig(fig, category="traces", name=save_name or title)
+
+
+# Diagnostic du desapprentissage (Go/No-Go) sur le run reel : reprend les 3 memes plots que
+# l'ancien demo_desapprentissage.py, mais construits a partir des sessions WDT concatenees du
+# pipeline normal — pas d'un scenario Acquisition/Extinction/Reapprentissage a part.
+def plot_delearning_diagnostics(
+    session_info,
+    mouse_sessions: List,
+    labels: List[str],
+    delearning_from_session: int,
+    perfs: Optional[List] = None,
+    dual_stim: bool = False,
+    save_prefix: str = "delearning",
+    trial_smooth_win: int = 20,
+    delearning_until_session: Optional[int] = None,
+) -> None:
+    def _to_1d(arr):
+        a = np.asarray(arr)
+        return a[:, 0] if a.ndim == 2 and a.shape[1] == 1 else a
+
+    T = session_info.number_bin
+    dt = session_info.resolution
+    n_sessions = len(mouse_sessions)
+    t_full = np.arange(n_sessions * T) * dt
+    boundary_t = (delearning_from_session - 1) * T * dt
+    reacq_t = (delearning_until_session - 1) * T * dt if delearning_until_session is not None else None
+
+    win = max(1, int(round(30.0 / dt)))  # moyenne glissante 30s, meme fenetre que l'ancien demo
+
+    def smooth(x):
+        return np.convolve(x, np.ones(win) / win, mode="same")
+
+    # --- Plot 1 : Hit Rate par essai pour la derniere session recompensee, la 1ere session
+    # de desapprentissage, et (si reapprentissage programme) la 1ere session de reapprentissage
+    # (2 ou 3 subplots cote a cote), pas le taux de leche brut par bin (qui inclut le lechage
+    # spontane entre les essais) ni les essais catch (qui restent proches de 0 et diluent le
+    # signal), ni les sessions WDT concatenees (pas utile ici, on veut juste les transitions).
+    if perfs is not None:
+        panels = [(delearning_from_session - 2, "dernière session récompensée"),
+                  (delearning_from_session - 1, "1ère session de désapprentissage")]
+        if delearning_until_session is not None:
+            panels.append((delearning_until_session - 1, "1ère session de réapprentissage"))
+
+        def _hit_rate_trial_series(perf, side=None):
+            # side=None (mono) : tous les essais stimulus. side=+1/-1 (dual) : uniquement
+            # les essais de ce cote, hit = outcome 1 (bon cote), pour comparer droite/gauche.
+            mask = (perf[:, 1] == side) if side is not None else (perf[:, 1] != 0)
+            t = perf[mask, 0]
+            resp = (perf[mask, 5] == 1).astype(float) if side is not None else perf[mask, 2].astype(float)
+            w = max(1, min(trial_smooth_win, resp.size))
+            smoothed = np.convolve(resp, np.ones(w) / w, mode="same") if resp.size else resp
+            return t, smoothed, w
+
+        fig, axes = plt.subplots(1, len(panels), figsize=(6 * len(panels), 4.5), sharey=True)
+        if len(panels) == 1:
+            axes = [axes]
+        for ax, (s_idx, tag) in zip(axes, panels):
+            perf = perfs[s_idx] if 0 <= s_idx < len(perfs) else None
+            if perf is None or not isinstance(perf, np.ndarray) or perf.size == 0:
+                continue
+            if dual_stim:
+                t_r, resp_r, w = _hit_rate_trial_series(perf, side=1)
+                t_l, resp_l, _ = _hit_rate_trial_series(perf, side=-1)
+                ax.plot(t_r, resp_r, color="tab:blue", label="Hit Rate droite")
+                ax.plot(t_l, resp_l, color="tab:orange", label="Hit Rate gauche")
+                ax.legend(loc="best", fontsize=8)
+            else:
+                t, resp_smooth, w = _hit_rate_trial_series(perf)
+                ax.plot(t, resp_smooth, color="tab:blue")
+            ax.set_xlabel("Temps dans la session (s)")
+            ax.set_title(f"{labels[s_idx]} — {tag}")
+            ax.grid(True, alpha=0.3)
+        axes[0].set_ylabel(f"Hit Rate (moyenne glissante, {trial_smooth_win} essais)")
+        axes[0].set_ylim(-0.02, 1.02)
+        fig.suptitle("Désapprentissage — Hit Rate avant / après coupure de la récompense")
+        fig.tight_layout()
+        _save_fig(fig, category="delearning", name=f"{save_prefix}_1_taux_de_leche")
+
+    # --- Plot 2 : E_go vs E_nogo (net) dans le temps ---
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    if dual_stim:
+        er = smooth(np.concatenate([_to_1d(ms.expectation_right) for ms in mouse_sessions]))
+        el = smooth(np.concatenate([_to_1d(ms.expectation_left) for ms in mouse_sessions]))
+        nr = smooth(np.concatenate([_to_1d(ms.expectation_nogo_right) for ms in mouse_sessions]))
+        nl = smooth(np.concatenate([_to_1d(ms.expectation_nogo_left) for ms in mouse_sessions]))
+        ax.plot(t_full, er - nr, color="tab:blue", label="Net droite (E_go − E_nogo)")
+        ax.plot(t_full, el - nl, color="tab:orange", label="Net gauche (E_go − E_nogo)")
+    else:
+        e_s = smooth(np.concatenate([_to_1d(ms.expectation) for ms in mouse_sessions]))
+        n_s = smooth(np.concatenate([_to_1d(ms.expectation_nogo) for ms in mouse_sessions]))
+        ax.plot(t_full, e_s, color="tab:blue", label="Expectation (E_go)")
+        ax.plot(t_full, n_s, color="tab:red", label="Expectation No-Go")
+        ax.plot(t_full, e_s - n_s, color="black", linewidth=1.5, linestyle="--", label="Net (E_go − E_nogo)")
+    ax.axvline(boundary_t, linestyle="--", color="gray", alpha=0.7)
+    if reacq_t is not None:
+        ax.axvline(reacq_t, linestyle="--", color="tab:green", alpha=0.7)
+    ax.set_xlabel("Temps (s) — sessions WDT concatenees")
+    ax.set_ylabel("Valeur")
+    ax.set_title("Désapprentissage — Expectation vs Expectation No-Go")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, category="delearning", name=f"{save_prefix}_2_expectation_vs_nogo")
+
+    # --- Plot 3 : Hit Rate moyen par session (barres) ---
+    if dual_stim and perfs is not None:
+        hr_right = [session_rates_dual(p)[1] for p in perfs]
+        hr_left = [session_rates_dual(p)[2] for p in perfs]
+        x = np.arange(n_sessions)
+        width = 0.38
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        bars_r = ax.bar(x - width / 2, hr_right, width, color="tab:blue", label="Hit Rate droite")
+        bars_l = ax.bar(x + width / 2, hr_left, width, color="tab:orange", label="Hit Rate gauche")
+        for bar, r in zip(list(bars_r) + list(bars_l), hr_right + hr_left):
+            ax.text(bar.get_x() + bar.get_width() / 2, r + 0.02, f"{r:.2f}", ha="center", fontsize=7)
+        ax.axvline(delearning_from_session - 1.5, linestyle="--", color="gray", alpha=0.7)
+        if delearning_until_session is not None:
+            ax.axvline(delearning_until_session - 1.5, linestyle="--", color="tab:green", alpha=0.7)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_ylabel("Hit Rate moyen par session")
+        ax.set_title("Désapprentissage — Hit Rate droite vs gauche par session")
+        ax.legend(loc="best", fontsize=8)
+        ax.grid(True, axis="y", alpha=0.3)
+        fig.tight_layout()
+        _save_fig(fig, category="delearning", name=f"{save_prefix}_3_barres_par_session")
+    else:
+        if perfs is not None:
+            rates = [session_rates(p)[0] for p in perfs]
+        else:
+            rates = [float(np.mean(_to_1d(ms.lick))) for ms in mouse_sessions]
+
+        def _phase_color(idx):
+            s = idx + 1
+            if s < delearning_from_session:
+                return "tab:green"
+            if delearning_until_session is not None and s >= delearning_until_session:
+                return "tab:green"
+            return "tab:red"
+
+        colors = [_phase_color(idx) for idx in range(n_sessions)]
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        bars = ax.bar(labels, rates, color=colors)
+        ymax = max(rates) if rates and max(rates) > 0 else 1.0
+        for bar, r in zip(bars, rates):
+            ax.text(bar.get_x() + bar.get_width() / 2, r + ymax * 0.02, f"{r:.3f}", ha="center", fontsize=8)
+        ax.set_ylabel("Hit Rate moyen par session")
+        ax.set_title("Désapprentissage — Hit Rate moyen par session")
+        ax.grid(True, axis="y", alpha=0.3)
+        fig.tight_layout()
+        _save_fig(fig, category="delearning", name=f"{save_prefix}_3_barres_par_session")
+
+
+def plot_population_learning_curves(
+    records: List[tuple],
+    dual_stim: bool = False,
+    save_name: str = "population_learning_curves",
+    title_suffix: str = "",
+    category: str = "population",
+) -> None:
+    """
+    Une courbe de Hit Rate par souris (session_rates / session_rates_dual selon dual_stim),
+    une couleur distincte par souris, legende a droite du plot montrant les valeurs des
+    parametres qui varient (learning_stim, noise) pour que chaque courbe soit tracable.
+    records : liste de (label, learning_stim_i, noise_scale_i, wdt_bundle).
+    """
+    n = len(records)
+    cmap = plt.get_cmap("tab10" if n <= 10 else "tab20")
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    sessions = None
+    for idx, (label, ls_i, ns_i, wdt_bundle) in enumerate(records):
+        if dual_stim:
+            hrs = [session_rates_dual(r.perf)[0] for r in wdt_bundle.results]
+        else:
+            hrs = [session_rates(r.perf)[0] for r in wdt_bundle.results]
+        sessions = np.arange(1, len(hrs) + 1)
+        color = cmap(idx % cmap.N)
+        ax.plot(sessions, hrs, color=color, marker="o", markersize=4, linewidth=1.8,
+                label=f"{label} — learning_stim={ls_i:.4f}, noise={ns_i:.3f}")
+
+    if sessions is not None:
+        ax.set_xticks(sessions)
+        ax.set_xticklabels([f"WDT{s}" for s in sessions])
+    ax.set_xlabel("Session")
+    ax.set_ylabel("Hit Rate")
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_title(f"Population ({n} souris, {'dual' if dual_stim else 'mono'}) — courbes d'apprentissage{title_suffix}")
+    ax.grid(True, alpha=0.3)
+    ax.legend(
+        loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8.5,
+        title="Paramètres variables", title_fontsize=9, frameon=True, borderaxespad=0.0,
+    )
+    fig.tight_layout()
+    _save_fig(fig, category=category, name=save_name)
+
+
+def plot_population_session_progression(
+    records: List[tuple],
+    dual_stim: bool = False,
+    session_index: int = -1,
+    smooth_window_s: float = 600.0,
+    save_name: str = "population_session_progression",
+    title_suffix: str = "",
+    category: str = "population",
+) -> None:
+    """
+    Evolution du Hit Rate AU COURS d'une session WDT (par defaut la derniere, WDT10), par
+    souris, lissee sur une fenetre glissante centree de smooth_window_s secondes (~10 min
+    par defaut) — pour visualiser l'effet de satiete intra-session (Motivation qui decroit
+    au fil de la session, cf. V*M-C) souris par souris. Une couleur par souris, meme legende
+    que plot_population_learning_curves (parametres qui varient). En dual, 2 sous-graphes
+    cote a cote (droite / gauche), une courbe par souris sur chaque.
+    """
+    n = len(records)
+    cmap = plt.get_cmap("tab10" if n <= 10 else "tab20")
+    half_w = smooth_window_s / 2.0
+
+    def _hr_smooth_series(perf, side=None):
+        mask = (perf[:, 1] == side) if side is not None else (perf[:, 1] != 0)
+        t = perf[mask, 0]
+        hit = (perf[mask, 5] == 1).astype(float)
+        order = np.argsort(t)
+        t, hit = t[order], hit[order]
+        if t.size == 0:
+            return t, hit
+        hr_smooth = np.array([hit[(t >= ti - half_w) & (t <= ti + half_w)].mean() for ti in t])
+        return t, hr_smooth
+
+    session_label = None
+    sides = (1, -1) if dual_stim else (None,)
+    fig, axes = plt.subplots(1, len(sides), figsize=(9 * len(sides), 6), sharey=True)
+    axes = [axes] if len(sides) == 1 else list(axes)
+
+    for ax, side in zip(axes, sides):
+        for idx, (label, ls_i, ns_i, wdt_bundle) in enumerate(records):
+            if not wdt_bundle.results:
+                continue
+            result = wdt_bundle.results[session_index]
+            session_label = wdt_bundle.labels[session_index]
+            perf = result.perf
+            if perf is None or not isinstance(perf, np.ndarray) or perf.size == 0:
+                continue
+
+            t, hr_smooth = _hr_smooth_series(perf, side=side)
+            if t.size == 0:
+                continue
+
+            color = cmap(idx % cmap.N)
+            ax.plot(t / 60.0, hr_smooth, color=color, linewidth=1.8,
+                    label=f"{label} — learning_stim={ls_i:.4f}, noise={ns_i:.3f}")
+
+        ax.set_xlabel("Temps dans la session (min)")
+        ax.set_ylim(-0.02, 1.02)
+        ax.grid(True, alpha=0.3)
+        if side is not None:
+            ax.set_title("Droite" if side == 1 else "Gauche")
+
+    axes[0].set_ylabel(f"Hit Rate (lissage ±{smooth_window_s / 60:.0f} min)")
+    fig.suptitle(
+        f"Population ({n} souris, {'dual' if dual_stim else 'mono'}) — "
+        f"évolution du Hit Rate pendant {session_label or 'la session'}{title_suffix}"
+    )
+    axes[-1].legend(
+        loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8.5,
+        title="Paramètres variables", title_fontsize=9, frameon=True, borderaxespad=0.0,
+    )
+    fig.tight_layout()
+    _save_fig(fig, category=category, name=save_name)
 
 
 # Value / Cost par trial (brut) + moyenne glissante (expected_V, expected_C)
@@ -1054,32 +1322,27 @@ def plot_single_session_rates_wa(perf: Optional[np.ndarray], title: str = "HR(st
 def plot_stim_gains(wdt_bundle, config, title: str = "Evolution des gains de stimuli",
                     save_name: Optional[str] = None) -> None:
     """
-    Pour chaque session, trace le gain Go de stim1/stim2 (toujours), et si le
-    desapprentissage est actif, le gain No-Go de chacun ET le gain NET (go - nogo) —
-    c'est ce gain net qui doit s'effondrer pour le stimulus qui cesse d'etre recompense
-    apres le switch de contingence, et grimper pour celui qui prend le relais.
+    Pour chaque session, trace le gain Go de stim1/stim2, le gain No-Go de chacun (architecture
+    Go/No-Go, toujours active) ET le gain NET (go - nogo) — c'est ce gain net qui doit
+    s'effondrer pour le stimulus qui cesse d'etre recompense apres le switch de contingence,
+    et grimper pour celui qui prend le relais.
     """
     labels = wdt_bundle.labels
     xs = np.arange(1, len(labels) + 1)
     g1 = np.array([r.stim1_gain for r in wdt_bundle.results])
     g2 = np.array([r.stim2_gain for r in wdt_bundle.results])
+    ng1 = np.array([r.stim1_nogo_gain for r in wdt_bundle.results])
+    ng2 = np.array([r.stim2_nogo_gain for r in wdt_bundle.results])
+    net1 = g1 - ng1
+    net2 = g2 - ng2
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
-
-    if config.DELEARNING:
-        ng1 = np.array([r.stim1_nogo_gain for r in wdt_bundle.results])
-        ng2 = np.array([r.stim2_nogo_gain for r in wdt_bundle.results])
-        net1 = g1 - ng1
-        net2 = g2 - ng2
-        ax.plot(xs, g1, linestyle=":", marker=".", color="tab:blue", alpha=0.5, label="Gain Go stim1")
-        ax.plot(xs, ng1, linestyle=":", marker=".", color="tab:red", alpha=0.5, label="Gain No-Go stim1")
-        ax.plot(xs, net1, linestyle="-", marker="x", color="tab:blue", linewidth=2, label="Gain NET stim1 (whisker)")
-        ax.plot(xs, g2, linestyle=":", marker=".", color="tab:orange", alpha=0.5, label="Gain Go stim2")
-        ax.plot(xs, ng2, linestyle=":", marker=".", color="tab:brown", alpha=0.5, label="Gain No-Go stim2")
-        ax.plot(xs, net2, linestyle="-", marker="^", color="tab:orange", linewidth=2, label="Gain NET stim2 (auditif)")
-    else:
-        ax.plot(xs, g1, linestyle="-", marker="x", color="tab:blue", label="Gain stim1 (whisker)")
-        ax.plot(xs, g2, linestyle="-", marker="^", color="tab:orange", label="Gain stim2 (auditif)")
+    ax.plot(xs, g1, linestyle=":", marker=".", color="tab:blue", alpha=0.5, label="Gain Go stim1")
+    ax.plot(xs, ng1, linestyle=":", marker=".", color="tab:red", alpha=0.5, label="Gain No-Go stim1")
+    ax.plot(xs, net1, linestyle="-", marker="x", color="tab:blue", linewidth=2, label="Gain NET stim1 (whisker)")
+    ax.plot(xs, g2, linestyle=":", marker=".", color="tab:orange", alpha=0.5, label="Gain Go stim2")
+    ax.plot(xs, ng2, linestyle=":", marker=".", color="tab:brown", alpha=0.5, label="Gain No-Go stim2")
+    ax.plot(xs, net2, linestyle="-", marker="^", color="tab:orange", linewidth=2, label="Gain NET stim2 (auditif)")
 
     ax.axvline(config.WA_SWITCH_SESSION - 0.5, linestyle="--", color="gray", alpha=0.6, label="switch de contingence")
     ax.axhline(0.0, linestyle="-", color="black", alpha=0.3, linewidth=0.8)

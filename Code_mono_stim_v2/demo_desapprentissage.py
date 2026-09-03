@@ -32,9 +32,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 random.seed(SEED)
 np.random.seed(SEED)
 
-# DELEARNING=True : c'est ce qui active E_nogo. Repasser a False reproduit l'ancien
-# comportement (elle ne desapprend jamais, meme apres 15 min sans recompense).
-config = SimConfig(dual_stim=False, DELEARNING=True, SAVE_PARAMETERS_TXT=False)
+# Architecture Go/No-Go (E_nogo) : toujours active, plus besoin de l'activer explicitement.
+config = SimConfig(dual_stim=False, SAVE_PARAMETERS_TXT=False)
 _, mouse = initialization(config)  # cree aussi un results/... vide, sans consequence
 
 si = SessionBaseInfo(duration=PHASE_DURATION_MIN)

@@ -102,6 +102,27 @@ class Mouse:
     # multi-seeds : ~0.05 donne un Mismatch WDT1 ~7% qui retombe a 0 vers WDT10, sans biais de cote.
     cross_stim_gain: float = 0.05
 
+    # --- Dual whisker/auditif uniquement (voir function_update_mouse_state_wa) ---------------
+    # Reprend le paradigme historique (switch de contingence WDT->AUD) mais avec UNE SEULE
+    # Expectation partagee (comme le mono-stimulus), alimentee par deux canaux de stimulus
+    # (whisker=1, auditif=2), chacun avec son propre gain Go et son propre gain No-Go appris.
+    # Tous les champs ci-dessous sont suffixes _wa et n'entrent JAMAIS en jeu pour le mono ou
+    # le dual gauche/droite — aucun risque de collision avec exp_update_stim/learning_stim
+    # (mono) ou stim_gain_max (dual gauche/droite, valeur differente : 0.6 vs 8.0 ici).
+    exp_update_stim1_wa: tuple = (1, 0.1)       # (tau, gain Go) whisker
+    exp_update_stim2_wa: tuple = (1, 0.1)       # (tau, gain Go) auditif
+    stim1_nogo_gain_wa: float = 0.0             # gain No-Go whisker (mutable, comme exp_update_stim1_wa[1])
+    stim2_nogo_gain_wa: float = 0.0             # gain No-Go auditif
+    stim_gain_max_wa: float = 8.0               # plafond commun aux 4 gains ci-dessus (go1/go2/nogo1/nogo2).
+                                                 # Volontairement haut : un plafond bas fait saturer le gain Go
+                                                 # des la 1ere session (recompensee), apres quoi il ne peut plus
+                                                 # compenser l'accumulation lente du No-Go — le gain net declinerait
+                                                 # des le debut au lieu de rester stable jusqu'au switch.
+    learning_stim_wa: float = 0.1               # taux d'apprentissage du gain Go (whisker/auditif)
+    learning_stim_nogo_wa: float = 0.02         # taux d'apprentissage du gain No-Go — volontairement 5x plus
+                                                 # lent que le Go (sinon les deux saturent ensemble des la 2e
+                                                 # session et le gain net s'effondre avant meme le switch).
+
     noise_adapt_enable: bool = True             # active/désactive la feature
     noise_target_rpe: float = 0.20              # |RPE| "attendu" (0..1)
     noise_window_bins: int = 5                  # moyenne sur les 5 derniers RPE
@@ -130,6 +151,13 @@ class WDTSesssionParams:
     reward_size: float = 1.0                                        # reward magnitude
     trial_types: list = field(default_factory=lambda: [0, 1.0])     # stimulus amplitudes (0 = catch trial)
     block_numb: int = 5                                             # number of blocks (not used in current code)
+
+    # --- Dual whisker/auditif uniquement (function_wdt_session_wa) ---------------------------
+    # Champs additifs, jamais lus par function_wdt_session (mono) ni par le dual gauche/droite.
+    trial_kinds: list = field(default_factory=lambda: [0, 1, 2])    # 0=catch, 1=whisker, 2=auditif
+    stim1_amp: float = 1.0                                          # amplitude du whisker quand present
+    stim2_amp: float = 1.0                                          # amplitude de l'auditif quand present
+    reward_stim: int = 1                                            # quel stimulus est actuellement recompense (1 ou 2)
 
 
 
@@ -161,7 +189,10 @@ class WDTSesssionState:
     iti: float = 0.0                                    # current ITI (s), sampled from range
     reward_window: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))  # response window mask over time
     reward: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))         # reward time-course
-    stim1: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))          # stimulus amplitude trace
+    stim1: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))          # stimulus amplitude trace (mono) / whisker (dual whisker/auditif)
+    # --- Dual whisker/auditif uniquement : jamais lu par function_wdt_session (mono) ---------
+    stim2: np.ndarray = field(default_factory=lambda: np.zeros((1, 1)))          # auditory amplitude trace
+    last_trial_kind: int = 0                                                     # 0/1/2 du dernier trial demarre
 
     def initialize(self, session_length: int, no_lick_range: tuple, iti_range: tuple):
         self.no_lick_wind = sample_uniform_range(*no_lick_range)    # sample initial no-lick window
@@ -169,6 +200,8 @@ class WDTSesssionState:
         self.reward_window = np.zeros((session_length, 1))          # allocate response-window mask (0/1)
         self.reward = np.zeros((session_length, 1))                 # allocate reward trace
         self.stim1 = np.zeros((session_length, 1))                  # allocate stimulus trace
+        self.stim2 = np.zeros((session_length, 1))                  # allocate auditory trace (dual whisker/auditif)
+        self.last_trial_kind = 0
         self.trial_times = []                                       # reset trial onset log
 
 
@@ -183,6 +216,9 @@ class MouseSessionState:
     eligibility: np.ndarray = field(default_factory=lambda: np.array([]))  # eligibility trace (exponential decay)
     uncertainty: np.ndarray = field(default_factory=lambda: np.array([]))  # U: confidence in the internal model, [0, U_max]
     expectation_nogo: np.ndarray = field(default_factory=lambda: np.array([]))  # E_nogo: voie d'inhibition Go/No-Go
+    # --- Dual whisker/auditif uniquement : jamais lues par le mono (une seule `eligibility`) -
+    eligibility1: np.ndarray = field(default_factory=lambda: np.array([]))  # eligibility whisker
+    eligibility2: np.ndarray = field(default_factory=lambda: np.array([]))  # eligibility auditif
     non_rew_lick_cnt: int = 0
     nogo_streak_cnt: int = 0  # lechages non recompenses consecutifs, pour la sensibilisation du tau No-Go
 
@@ -195,6 +231,8 @@ class MouseSessionState:
         self.p_lick = np.zeros((session_length, 1))                                 # allocate p(lick) curve
         self.lick = np.zeros((session_length, 1))                                   # allocate lick (0/1) curve
         self.eligibility = np.zeros((session_length, 1))                            # allocate eligibility trace
+        self.eligibility1 = np.zeros((session_length, 1))                           # dual whisker/auditif seulement
+        self.eligibility2 = np.zeros((session_length, 1))
         # U est un "state" (comme Expectation) : pas de forgetting entre sessions, on repart
         # du dernier niveau de confiance atteint (sauf pour la toute 1ere session, U=0).
         self.uncertainty = np.full((session_length, 1), float(init_uncertainty))
@@ -267,6 +305,16 @@ class SimConfig:
     DUAL_TRIAL_KINDS: list = field(default_factory=lambda: [0, 1, 2])  # 0=catch, 1=stim droite, 2=stim gauche
     DUAL_STIM_AMP: float = 1.0
 
+    # Troisieme mode, independant de dual_stim (gauche/droite) : whisker/auditif avec UNE SEULE
+    # Expectation partagee (comme le mono) et un switch de contingence WDT->AUD (paradigme
+    # historique). Priorite sur dual_stim si les deux sont actives par erreur (voir main.py).
+    WHISKER_AUD_STIM: bool = False
+    WA_NUM_SESSIONS: int = 10
+    WA_SWITCH_SESSION: int = 6           # sessions 1..N-1 : stim1 (whisker) recompense ; N..fin : stim2 (auditif)
+    WA_TRIAL_KINDS: list = field(default_factory=lambda: [0, 1, 2])  # 0=catch, 1=whisker, 2=auditif
+    WA_STIM1_AMP: float = 1.0
+    WA_STIM2_AMP: float = 1.0
+
     # Architecture Go/No-Go : toujours active dans la decision (voir Mouse.exp_update_nogo),
     # ces trois valeurs pilotent juste la dynamique de la voie No-Go.
     NOGO_TAU: float = 8.0
@@ -326,6 +374,12 @@ class WDTRunResult:
     vc_log: dict = field(default_factory=lambda: {
         "trial_times": [], "v": [], "c": [], "expected_v": [], "expected_c": []
     })
+    # --- Dual whisker/auditif uniquement : gains a la fin de cette session, pour le plot
+    # d'evolution (plot_stim_gains). Restent a 0.0 pour le mono et le dual gauche/droite.
+    stim1_gain: float = 0.0
+    stim2_gain: float = 0.0
+    stim1_nogo_gain: float = 0.0
+    stim2_nogo_gain: float = 0.0
 
 
 @dataclass
