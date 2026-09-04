@@ -37,7 +37,7 @@ from functions import (
     run_population,
 )
 
-config = SimConfig(dual_stim=False, POPULATION_RANGE=False, POPULATION_N_MICE=5, POPULATION_SPREAD_SWEEP=True, WHISKER_AUD_STIM=False)
+config = SimConfig(dual_stim=True, POPULATION_RANGE=True, POPULATION_N_MICE=5, POPULATION_SPREAD_SWEEP=True)
 
 if config.POPULATION_RANGE:
     run_population(config)
