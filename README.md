@@ -216,12 +216,13 @@ sous-dossier par catégorie de plot (`traces/`, `block_rates/`, `learning_curve/
 
 ## Environnement
 
-L'environnement conda est défini dans `bio482.yml` : Python 3.11, numpy, matplotlib, scipy.
+L'environnement conda est défini dans `bio482.yml` : Python 3.11, numpy, matplotlib, scipy. 
 
 ```bash
 conda env create -f bio482.yml
 conda activate bio482
 ```
+Ensuite séléctionner le Python Interpreter dans la barre de recherche quand vous êtes dans le fichier. Barre de recherche -> Cmd + P -> Python: Select Interpreter -> bio482.
 
 ## Exemple de run
 
