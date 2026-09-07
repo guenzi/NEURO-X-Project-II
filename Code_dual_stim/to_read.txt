@@ -1,7 +1,0 @@
-Certains graphiques fonctionnent mal en dual-stim car ils ont été conçus pour la mono-stim.
-
-Ils sont restés volontairement après le fork : avec quelques adaptations, 
-ils pourront être rendus compatibles (séparation des canaux, légendes, métriques par stimulus).
-
-Comme l’objectif actuel est d’évaluer le transfert d’apprentissage via la modulation du noise gain,
-ces ajustements n’ont pas encore été faits.

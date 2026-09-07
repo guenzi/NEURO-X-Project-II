@@ -3,7 +3,7 @@ import random
 import matplotlib.pyplot as plt
 from collections import deque
 from dataclasses import replace
-from typing import Any, Optional, Sequence, Set, List, Dict
+from typing import Any, Optional, Sequence, Set, List, Tuple
 
 
 from models import (
@@ -52,6 +52,7 @@ from plotting import (
 
 
 def sample_uniform_range(min_val, max_val):
+    # Duplique de models.py (import circulaire sinon) — garder les deux identiques.
     return min_val + (max_val - min_val) * random.random()
 
 
@@ -117,7 +118,7 @@ def function_update_mouse_state(
     in_trial_window_prev: int = 0,
     reward_denied_by_prob: bool = False,
 ) -> tuple[Mouse, MouseSessionState]:
-
+    # Mise a jour de tout l'etat interne (mono) a ce bin : motivation, RPE, E_nogo, E_go, gain de stimulus.
     t = i * session_info.resolution
     time_vector = session_info.time_vector
 
@@ -126,9 +127,9 @@ def function_update_mouse_state(
             mouse_session.motivation[i - 1, 0] - mouse.motivation[1] * reward_t
         )
     else:
-        mouse_session.motivation[i, 0] = mouse_session.motivation[i - 1, 0]
+        mouse_session.motivation[i, 0] = mouse_session.motivation[i - 1, 0]  # sinon M reste constante entre deux recompenses
 
-    rpe_t = reward_t - mouse_session.expectation[i - 1, 0]
+    rpe_t = reward_t - mouse_session.expectation[i - 1, 0]   # reward prediction error, sur E_go seule (pas E_go - E_nogo)
     mouse_session.rpe[i, 0] = rpe_t
 
     # Uncertainty: U_{t+1} = U_t + A_U*(2*|RPE_t|-1)^3, sur tout evenement saillant
@@ -152,16 +153,16 @@ def function_update_mouse_state(
     # future ferait saturer E_nogo en quelques secondes. Le kick est saturant
     # (gain*(1-E_nogo), pas +gain) donc borne par construction.
     tau_nogo, gain_nogo = mouse.exp_update_nogo
-    decay_nogo = np.exp(-session_info.resolution / tau_nogo)
+    decay_nogo = np.exp(-session_info.resolution / tau_nogo)   # decroissance exponentielle sur un bin
     e_nogo_new = mouse_session.expectation_nogo[i - 1, 0] * decay_nogo
 
     is_new_unrewarded_bout = (
         reward_t == 0
         and mouse_session.lick[i - 1, 0] == 1
-        and (i < 2 or mouse_session.lick[i - 2, 0] == 0)
+        and (i < 2 or mouse_session.lick[i - 2, 0] == 0)   # False si le bin precedent lechait deja (meme bout)
     )
     if is_new_unrewarded_bout:
-        e_nogo_new = e_nogo_new + gain_nogo * (1.0 - e_nogo_new)
+        e_nogo_new = e_nogo_new + gain_nogo * (1.0 - e_nogo_new)   # kick saturant, borne par construction
 
     if reward_t > 0:
         # "Soulagement" : une recompense confirmee efface une partie de la mefiance deja
@@ -171,6 +172,7 @@ def function_update_mouse_state(
     mouse_session.expectation_nogo[i, 0] = float(np.clip(e_nogo_new, 0.0, 1.0))
 
     if reward_t > 0:
+        # injecte un noyau decroissant (tau enorme=quasi permanent) dans TOUS les bins futurs, pas juste celui-ci
         update = (
             rpe_t
             * mouse.exp_update_reward[1]
@@ -180,6 +182,7 @@ def function_update_mouse_state(
         mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
 
     if reward_t == 0 and mouse_session.lick[i - 1, 0] == 1:
+        # meme forme de noyau, mais tau court -> chute rapide, se redeclenche a chaque bin d'un lick non recompense
         update = (
             rpe_t
             * mouse.exp_update_no_reward[1]
@@ -202,11 +205,11 @@ def function_update_mouse_state(
         stim_gain = mouse.exp_update_stim[1]
         stim_tau = mouse.exp_update_stim[0]
 
-        update_exp = stim_t * stim_gain * np.exp(-np.maximum(time_vector - t, 0.0) / stim_tau)
+        update_exp = stim_t * stim_gain * np.exp(-np.maximum(time_vector - t, 0.0) / stim_tau)   # boost anticipatoire
         mouse_session.expectation[i:, 0] += update_exp[i:]
         mouse_session.expectation = np.clip(mouse_session.expectation, 0, 1)
 
-        update_elig = stim_t * np.exp(-np.maximum(time_vector - t, 0.0) / mouse.tau_eligibility)
+        update_elig = stim_t * np.exp(-np.maximum(time_vector - t, 0.0) / mouse.tau_eligibility)  # trace pour credit-assign a la recompense
         mouse_session.eligibility[i:, 0] += update_elig[i:]
         mouse_session.eligibility = np.clip(mouse_session.eligibility, 0, 1)
 
@@ -216,10 +219,10 @@ def function_update_mouse_state(
         mouse_session.non_rew_lick_cnt = 0
 
     # Sensibilisation No-Go : apres une serie de lechages non recompenses consecutifs (DANS un
-    # essai), le tau_nogo peut grandir (desactive par standardisation, NOGO_TAU_GROWTH=0) et/ou
-    # le gain No-Go apprend a la place — meme regle delta que le gain Go (learning_stim), sur
-    # -rpe_t (plus la non-recompense est surprenante, plus le gain grandit). Meme cadence que
-    # l'ancienne sensibilisation du tau pour ne pas contaminer l'apprentissage normal.
+    # essai), le tau_nogo grandit (si NOGO_TAU_GROWTH>0) et/ou le gain No-Go apprend, meme regle
+    # delta que le gain Go (learning_stim), sur -rpe_t (plus la non-recompense est surprenante,
+    # plus le gain grandit). Ne compte que dans la fenetre de reponse d'un essai, pas le
+    # lechage spontane entre les essais.
     if mouse_session.nogo_streak_cnt >= mouse.nogo_streak_incr[0]:
         old_tau_nogo, gain_nogo_cur = mouse.exp_update_nogo
         new_tau_nogo = min(old_tau_nogo + mouse.nogo_streak_incr[1], mouse.nogo_tau_max)
@@ -252,6 +255,7 @@ def function_fl_session(
     session_info: SessionBaseInfo,
     lick: int,
     i: int) -> tuple[float, float, Any]:
+    # Un bin de session FL : recompense forcee au temps programme, sinon lick spontane recompense selon reward_prob.
     t = i * session_info.resolution
     reward = 0.0
     stim = 0.0  
@@ -289,6 +293,9 @@ def function_wdt_session(
     lick: int,
     i: int
 ) -> tuple[float, float, WDTSesssionState, bool, bool]:
+    # Un bin de session WDT : demarre/gere un essai, recompense selon reward_prob dans la
+    # fenetre de reponse. reward_denied_by_prob : True seulement si ce lick a atteint le
+    # tirage de probabilite et qu'il a echoue (voir Mouse.stim_gain_noreward_active).
     t = i * session_info.resolution
     reward = 0.0
     stim = 0.0
@@ -369,6 +376,8 @@ def function_performance_wdt(
     wdt_session: WDTSesssionState,
     mouse_session: MouseSessionState
 ) -> np.ndarray:
+    # Resume chaque essai en une ligne : [temps, amplitude_stim, lick, latence, reward, outcome].
+    # outcome : 0=Miss, 1=Hit, 2=Correct Rejection, 3=False Alarm.
     sr = int(round(1 / session_info.resolution))
     trials = [t for t in wdt_session.trial_times if t < (session_info.duration * 60 - wdt_params.response_wind)]
     
@@ -416,6 +425,8 @@ def simulate_mouse_and_get_session_perf(
     multiamp_types: Optional[Sequence[float]] = None,  # <- Optional
     include_wdt_test: bool = True
 ) -> np.ndarray:
+    # Rejoue un run mono complet pour une souris isolee, retourne juste perf de session_name
+    # (moteur de population_hr_fa_plot).
     if seed is not None:
         np.random.seed(seed)
         random.seed(seed)
@@ -428,7 +439,9 @@ def simulate_mouse_and_get_session_perf(
         multiamp_types = [0, 0, 0, 0, 0, 0.2, 0.5, 0.7, 1.0, 1.5]
 
     si = SessionBaseInfo()
-    mouse = Mouse(noise=(1.2, 3.0, float(noise_gain)), learning_stim=float(learning_stim))
+    # noise_gain n'a aucun effet ici (mouse.noise ne lit que ses deux premiers elements) :
+    # mouse = Mouse(noise=(1.2, 3.0, float(noise_gain)), learning_stim=float(learning_stim))
+    mouse = Mouse(noise=(1.2, 3.0), learning_stim=float(learning_stim))
 
     # FL1
     flp = FreeLickingSessionParams()
@@ -624,9 +637,6 @@ def online_sigmoid_update(
     return lick_counter
 
 
-
-from typing import Iterable, Optional, Sequence, Set, Tuple, List, Dict
-
 def population_hr_fa_plot(
     n_mice: int = 10,
     noise_gain: float = 0.10,
@@ -672,9 +682,7 @@ def population_hr_fa_plot(
     return hr_arr, fa_arr, dp_arr
 
 
-# Fonctions d'orchestration appelees par main.py. Elles reproduisent exactement l'ancien
-# main.py (meme ordre d'appel, donc meme ordre de tirages aleatoires), juste rangees en
-# fonctions au lieu d'etre ecrites a plat dans le script.
+# Fonctions d'orchestration appelees par main.py
 
 def _build_mouse(config: SimConfig, learning_stim: Optional[float] = None, noise: Optional[tuple] = None) -> Mouse:
     """Construit un Mouse a partir de config, avec overrides optionnels (utilise par run_population
@@ -914,7 +922,7 @@ def plot_all_results(
     wdt_bundle: WDTBundle,
     wdt_test: WDTRunResult,
 ) -> None:
-    """Tous les plots, dans le meme ordre que l'ancien main.py."""
+    """Genere tous les plots du run mono, chacun conditionne par son switch dans config."""
 
     if config.PLOT_TRACES:
         plot_traces(session_info.time_vector, log_fl1.mouse_session, log_fl1.session.reward,
@@ -1138,14 +1146,12 @@ def save_run_parameters(config: SimConfig, mouse: Mouse, session_info: SessionBa
     save_parameters_txt(param_rows)
 
 
-# Dual whisker/auditif : reprend le paradigme historique (switch de contingence WDT->AUD)
-# mais avec UNE SEULE Expectation partagee (comme le mono), alimentee par deux canaux de
-# stimulus, chacun avec son propre gain Go et son propre gain No-Go (desapprentissage
-# specifique au stimulus). Rien ci-dessus n'est modifie ; ces fonctions sont utilisees a la
-# place des precedentes uniquement quand config.WHISKER_AUD_STIM=True (voir main.py).
-# function_mouse_lick et function_fl_session (mono, inchangees) sont reutilisees telles
-# quelles : la decision et le Free Licking ne dependent jamais du nombre de canaux de
-# stimulus, seule la session WDT/AUD en a un.
+# Dual whisker/auditif : UNE SEULE Expectation partagee (comme le mono), alimentee par deux
+# canaux de stimulus (whisker, auditif) avec chacun son propre gain. Le stimulus recompense
+# change en cours d'entrainement (switch de contingence, voir WA_SWITCH_SESSION). Utilise
+# uniquement quand config.WHISKER_AUD_STIM=True (voir main.py). function_mouse_lick et
+# function_fl_session (mono) sont reutilisees telles quelles : la decision et le Free
+# Licking ne dependent pas du nombre de canaux de stimulus, seule la session WDT/AUD en a un.
 
 def function_update_mouse_state_wa(
     mouse: Mouse,
@@ -1156,6 +1162,7 @@ def function_update_mouse_state_wa(
     stim2_t: float,
     reward_t: float,
     in_trial_window_prev: int = 0,
+    reward_denied_stim: int = 0,
 ) -> tuple[Mouse, MouseSessionState]:
     """
     Comme function_update_mouse_state (mono), etendue a DEUX canaux de stimulus qui
@@ -1224,13 +1231,11 @@ def function_update_mouse_state_wa(
 
     # --- Contribution des DEUX stimuli a l'Expectation partagee -----------------------------
     if stim1_t > 0.0 or stim2_t > 0.0:
-        tau1, gain1_go = mouse.exp_update_stim1_wa
-        tau2, gain2_go = mouse.exp_update_stim2_wa
-        net_gain1 = gain1_go - mouse.stim1_nogo_gain_wa
-        net_gain2 = gain2_go - mouse.stim2_nogo_gain_wa
+        tau1, net_gain1 = mouse.exp_update_stim1_wa
+        tau2, net_gain2 = mouse.exp_update_stim2_wa
 
         if stim1_t > 0.0:
-            update_exp1 = stim1_t * net_gain1 * np.exp(-np.maximum(time_vector - t, 0.0) / tau1)
+            update_exp1 = stim1_t * net_gain1 * np.exp(-np.maximum(time_vector - t, 0.0) / tau1)  # boost whisker
             mouse_session.expectation[i:, 0] += update_exp1[i:]
             update_elig1 = stim1_t * np.exp(-np.maximum(time_vector - t, 0.0) / mouse.tau_eligibility)
             mouse_session.eligibility1[i:, 0] += update_elig1[i:]
@@ -1250,14 +1255,21 @@ def function_update_mouse_state_wa(
         mouse.exp_update_no_reward = (old_tau + mouse.learning_nonrew_lick[1], gain)
         mouse_session.non_rew_lick_cnt = 0
 
-    # Sensibilisation No-Go generale (voir function_update_mouse_state, meme principe).
+    # Sensibilisation No-Go generale (meme principe que function_update_mouse_state, mono) :
+    # tau ET gain No-Go grandissent ensemble a ce declenchement, le gain selon la meme regle
+    # delta que le gain Go, sur -rpe_t.
     if mouse_session.nogo_streak_cnt >= mouse.nogo_streak_incr[0]:
         old_tau_nogo, gain_nogo_cur = mouse.exp_update_nogo
         new_tau_nogo = min(old_tau_nogo + mouse.nogo_streak_incr[1], mouse.nogo_tau_max)
-        mouse.exp_update_nogo = (new_tau_nogo, gain_nogo_cur)
+        new_gain_nogo = gain_nogo_cur
+        if mouse.learning_nogo_gain > 0:
+            new_gain_nogo = float(np.clip(
+                gain_nogo_cur + (-rpe_t) * mouse.learning_nogo_gain, 0.0, mouse.nogo_gain_max
+            ))
+        mouse.exp_update_nogo = (new_tau_nogo, new_gain_nogo)
         mouse_session.nogo_streak_cnt = 0
 
-    # --- Apprentissage des gains Go, a la recompense ----------------------------------------
+    # --- Apprentissage des gains, a la recompense --------------------------------------------
     if reward_t > 0.0:
         elig1 = float(mouse_session.eligibility1[i, 0])
         elig2 = float(mouse_session.eligibility2[i, 0])
@@ -1267,15 +1279,20 @@ def function_update_mouse_state_wa(
         g2_new = g2 + rpe_t * mouse.learning_stim_wa * elig2
         mouse.exp_update_stim1_wa = (tau1, float(np.clip(g1_new, 0.0, mouse.stim_gain_max_wa)))
         mouse.exp_update_stim2_wa = (tau2, float(np.clip(g2_new, 0.0, mouse.stim_gain_max_wa)))
-
-    # --- Desapprentissage SPECIFIQUE au stimulus (No-Go), au lick non recompense -----------
-    if reward_t == 0.0 and mouse_session.lick[i - 1, 0] == 1:
-        elig1 = float(mouse_session.eligibility1[i, 0])
-        elig2 = float(mouse_session.eligibility2[i, 0])
-        mouse.stim1_nogo_gain_wa = float(np.clip(
-            mouse.stim1_nogo_gain_wa + (-rpe_t) * mouse.learning_stim_nogo_wa * elig1, 0.0, mouse.stim_gain_max_wa))
-        mouse.stim2_nogo_gain_wa = float(np.clip(
-            mouse.stim2_nogo_gain_wa + (-rpe_t) * mouse.learning_stim_nogo_wa * elig2, 0.0, mouse.stim_gain_max_wa))
+    elif is_new_unrewarded_bout and reward_denied_stim in (1, 2):
+        # Le gain du stimulus concerne descend directement, meme formule que sa propre montee,
+        # quand un lick dessus n'est pas recompense parce que ce n'est plus le stimulus
+        # actuellement recompense. Gate bout-onset pour ne pas re-declencher a chaque bin.
+        if reward_denied_stim == 1:
+            elig1 = float(mouse_session.eligibility1[i, 0])
+            tau1, g1 = mouse.exp_update_stim1_wa
+            g1_new = g1 + rpe_t * mouse.learning_stim_wa * elig1
+            mouse.exp_update_stim1_wa = (tau1, float(np.clip(g1_new, 0.0, mouse.stim_gain_max_wa)))
+        else:
+            elig2 = float(mouse_session.eligibility2[i, 0])
+            tau2, g2 = mouse.exp_update_stim2_wa
+            g2_new = g2 + rpe_t * mouse.learning_stim_wa * elig2
+            mouse.exp_update_stim2_wa = (tau2, float(np.clip(g2_new, 0.0, mouse.stim_gain_max_wa)))
 
     return mouse, mouse_session
 
@@ -1286,7 +1303,7 @@ def function_wdt_session_wa(
     session_info: SessionBaseInfo,
     lick: int,
     i: int,
-) -> tuple[float, float, float, WDTSesssionState, bool]:
+) -> tuple[float, float, float, WDTSesssionState, bool, int]:
     """Comme function_wdt_session (mono), avec 3 types de trial (0=catch, 1=whisker,
     2=auditif) au lieu de 2. Seul un lick pendant la fenetre de reponse ET dont le type de
     trial correspond a `session_param.reward_stim` est recompense — un lick sur l'AUTRE
@@ -1296,6 +1313,12 @@ def function_wdt_session_wa(
     stim1 = 0.0
     stim2 = 0.0
     new_trial = False
+    # 0=aucun, 1/2=whisker/auditif : stimulus dont ce lick, dans sa propre fenetre de reponse,
+    # n'a pas ete recompense parce que ce n'est pas actuellement le stimulus recompense
+    # (mismatch de contingence) — l'equivalent whisker/auditif de reward_denied_by_prob
+    # (mono/dual), sauf que ce n'est jamais du a un tirage de probabilite : c'est certain des
+    # que le mauvais stimulus est presente, puisque le paradigme a toujours un cote "faux".
+    reward_denied_stim = 0
 
     if (
         (t - wdt_session.last_lick_time) > wdt_session.no_lick_wind
@@ -1332,6 +1355,8 @@ def function_wdt_session_wa(
                 if random.random() <= session_param.reward_prob:
                     reward = session_param.reward_size
                     wdt_session.last_reward_time = t
+            elif wdt_session.last_trial_kind in (1, 2):
+                reward_denied_stim = wdt_session.last_trial_kind
 
     wdt_session.reward[i, 0] = reward
     if stim1 > 0:
@@ -1339,7 +1364,7 @@ def function_wdt_session_wa(
     if stim2 > 0:
         wdt_session.stim2[i, 0] = stim2
 
-    return reward, stim1, stim2, wdt_session, new_trial
+    return reward, stim1, stim2, wdt_session, new_trial, reward_denied_stim
 
 
 def function_performance_wdt_wa(
@@ -1406,7 +1431,7 @@ def run_wdt_session_wa(
     mouse_session.initialize(session_info.number_bin, mouse.motivation[0], init_expect, init_uncert, init_nogo)
 
     for i in range(1, session_info.number_bin):
-        reward_t, s1, s2, wdt_session, _ = function_wdt_session_wa(
+        reward_t, s1, s2, wdt_session, _, reward_denied_stim = function_wdt_session_wa(
             wdt_params, wdt_session, session_info, int(mouse_session.lick[i - 1, 0]), i
         )
         _, mouse_session = function_mouse_lick(
@@ -1415,6 +1440,7 @@ def run_wdt_session_wa(
         mouse, mouse_session = function_update_mouse_state_wa(
             mouse, mouse_session, session_info, i, s1, s2, reward_t,
             in_trial_window_prev=int(wdt_session.reward_window[i - 1, 0] > 0.5),
+            reward_denied_stim=reward_denied_stim,
         )
 
     perf = function_performance_wdt_wa(wdt_params, session_info, wdt_session, mouse_session)
@@ -1422,7 +1448,6 @@ def run_wdt_session_wa(
     return WDTRunResult(
         label=label, session=wdt_session, mouse_session=mouse_session, perf=perf,
         stim1_gain=float(mouse.exp_update_stim1_wa[1]), stim2_gain=float(mouse.exp_update_stim2_wa[1]),
-        stim1_nogo_gain=float(mouse.stim1_nogo_gain_wa), stim2_nogo_gain=float(mouse.stim2_nogo_gain_wa),
     )
 
 
@@ -1455,8 +1480,7 @@ def run_all_wdt_wa(mouse: Mouse, session_info: SessionBaseInfo, config: SimConfi
             hr1, hr2, fa = 0.0, 0.0, 0.0
 
         print(f"Hit Rate {label} : stim1(whisker)={hr1:.2f}  stim2(auditif)={hr2:.2f}  FA={fa:.2f}"
-              f"  |  gains go(stim1,stim2)=({result.stim1_gain:.3f},{result.stim2_gain:.3f})"
-              f"  nogo(stim1,stim2)=({result.stim1_nogo_gain:.3f},{result.stim2_nogo_gain:.3f})")
+              f"  |  gains(stim1,stim2)=({result.stim1_gain:.3f},{result.stim2_gain:.3f})")
 
         bundle.results.append(result)
         bundle.labels.append(label)
@@ -1507,7 +1531,7 @@ def plot_all_results_wa(
         for lbl, result in zip(wdt_bundle.labels, wdt_bundle.results):
             plot_single_session_rates_wa(result.perf, title=f"{lbl} — HR(stim1/stim2) vs FA", save_name=lbl.lower())
 
-    plot_stim_gains(wdt_bundle, config, title="Evolution des gains de stimuli (Go — No-Go)",
+    plot_stim_gains(wdt_bundle, config, title="Evolution des gains de stimuli",
                     save_name="stim_gains_evolution")
 
     if config.PLOT_RPE_ALL:
@@ -1558,9 +1582,8 @@ def save_run_parameters_wa(config: SimConfig, mouse: Mouse, session_info: Sessio
         ("Tau (stimulus, s)", _ref_mouse.exp_update_stim1_wa[0]),
         ("Gain initial (stim1, whisker)", _ref_mouse.exp_update_stim1_wa[1]),
         ("Gain initial (stim2, auditif)", _ref_mouse.exp_update_stim2_wa[1]),
-        ("Stimulus gain learning rate (Go)", _ref_mouse.learning_stim_wa),
-        ("Stimulus gain learning rate (No-Go)", _ref_mouse.learning_stim_nogo_wa),
-        ("Stimulus gain cap (go et no-go)", _ref_mouse.stim_gain_max_wa),
+        ("Stimulus gain learning rate (monte a la recompense, descend au mismatch)", _ref_mouse.learning_stim_wa),
+        ("Stimulus gain cap", _ref_mouse.stim_gain_max_wa),
         ("Eligibility trace tau (s)", _ref_mouse.tau_eligibility),
 
         ("MOUSE — ARCHITECTURE GO/NO-GO GENERALE (E_go - E_nogo, base)", None),
@@ -1583,18 +1606,9 @@ def save_run_parameters_wa(config: SimConfig, mouse: Mouse, session_info: Sessio
 
 
 # Deux stimuli, chacun menant a une recompense a un endroit different (droite/gauche).
-# Rien ci-dessus n'est modifie ; ces fonctions sont utilisees a la place des precedentes
-# uniquement quand config.dual_stim=True (voir main.py).
-#
-# Expectation (E) est signee, dans [-1, 1] : le signe dit quel cote est actuellement
-# attendu, la magnitude dit a quel point c'est confiant. Le cote de la decision est
-# tranche par le signe de E AVANT de calculer le "drive" — le bruit et l'Uncertainty
-# ne font donc jamais changer de cote, ils modulent seulement si la souris repond ou
-# pas sur le cote que E designe deja (meme role que dans le modele a un seul stimulus,
-# ou le bruit ne "choisit" jamais rien, il fait juste agir ou pas).
-#
-# Motivation et Uncertainty restent globales (pas dupliquees par cote), pour permettre
-# une vraie interference entre les deux apprentissages plutot que deux souris independantes.
+# Deux Expectations independantes E_droite/E_gauche, chacune dans [0, 1] ; le cote de la
+# decision est tranche par comparaison bruitee des deux (voir function_mouse_lick_dual).
+# Motivation et Uncertainty restent globales (pas dupliquees par cote).
 
 
 def function_mouse_lick_dual(
@@ -1615,12 +1629,12 @@ def function_mouse_lick_dual(
 
     Le cote n'est pas lu par une comparaison dure : un bruit independant (Gumbel, echelle
     1/side_readout_slope) est ajoute a E_droite et a E_gauche separement, puis on prend le
-    max (comme dans Lak et al. 2020 — le bruit vit sur les deux Expectations, pas au moment
-    du choix). Ce mecanisme est l'equivalent exact (Gumbel-max trick) de l'ancienne sigmoide
-    P(droite) = sigmoide(side_readout_slope . (E_droite - E_gauche)) : meme statistique de
-    choix agregee, mais le bruit est maintenant sur les deux representations plutot qu'une
-    probabilite calculee sur des valeurs propres. Bruit fixe, independant de l'Uncertainty
-    (qui ne module que la decision Go/No-Go plus bas, pas ce choix de cote).
+    max (Gumbel-max trick, comme dans Lak et al. 2020 — le bruit vit sur les deux
+    Expectations, pas au moment du choix). Statistiquement equivalent a un choix par
+    sigmoide sur (E_droite - E_gauche), mais le bruit est ici porte par les deux
+    representations plutot que par une probabilite calculee sur leur difference. Bruit fixe,
+    independant de l'Uncertainty (qui ne module que la decision Go/No-Go plus bas, pas ce
+    choix de cote).
     """
     lick = 0
     lick_side = 0
@@ -1634,13 +1648,13 @@ def function_mouse_lick_dual(
 
     A = mouse.decision_slope if decision_slope is None else decision_slope
     u_rel = uncertainty_t - mouse.uncertainty_offset
-    w_exploit = 1.0 / (1.0 + np.exp(A * u_rel))
-    w_explore = 1.0 / (1.0 + np.exp(-A * u_rel))
+    w_exploit = 1.0 / (1.0 + np.exp(A * u_rel))     # poids de E, decroit avec U
+    w_explore = 1.0 / (1.0 + np.exp(-A * u_rel))    # poids du bruit, croit avec U
 
     beta_side = 1.0 / mouse.side_readout_slope
     eps_right = np.random.gumbel(0.0, beta_side)
     eps_left = np.random.gumbel(0.0, beta_side)
-    side = 1 if (e_right_t + eps_right) >= (e_left_t + eps_left) else -1
+    side = 1 if (e_right_t + eps_right) >= (e_left_t + eps_left) else -1   # Gumbel-max trick
     e_side = e_right_t if side == 1 else e_left_t
 
     # Architecture Go/No-Go : le choix du cote (ci-dessus) reste base sur E_right/E_left
@@ -1650,7 +1664,7 @@ def function_mouse_lick_dual(
         mouse_session.expectation_nogo_right[i - 1, 0] if side == 1
         else mouse_session.expectation_nogo_left[i - 1, 0]
     )
-    e_side = e_side - e_nogo_side
+    e_side = e_side - e_nogo_side   # E_go - E_nogo, uniquement sur le cote choisi
 
     v_r = mouse.reward_value if v_right is None else v_right
     v_l = mouse.reward_value if v_left is None else v_left
@@ -1661,7 +1675,7 @@ def function_mouse_lick_dual(
 
     drive = e_side * w_exploit + gamma_noise * w_explore
     decision_gate = v_side * motivation_t - c_side
-    d_t = drive * decision_gate
+    d_t = drive * decision_gate   # meme decision D que le mono, appliquee au cote choisi
 
     lick_thrs = mouse.lick_thrs if threshold is None else threshold
     if d_t >= lick_thrs:
@@ -1704,7 +1718,7 @@ def function_update_mouse_state_dual(
         mouse_session.motivation[i, 0] = mouse_session.motivation[i - 1, 0]
 
     lick_side_prev = int(mouse_session.lick_side[i - 1, 0])
-    ref_side_t = reward_side_t if reward_t > 0 else lick_side_prev
+    ref_side_t = reward_side_t if reward_t > 0 else lick_side_prev   # quel canal cet evenement concerne
 
     if ref_side_t == 1:
         e_ref_prev = mouse_session.expectation_right[i - 1, 0]
@@ -1828,8 +1842,7 @@ def function_update_mouse_state_dual(
         mouse.exp_update_no_reward = (old_tau + mouse.learning_nonrew_lick[1], gain)
         mouse_session.non_rew_lick_cnt = 0
 
-    # Standardisation : tau fixe par defaut, le gain No-Go apprend a la place, separement par
-    # cote (meme regle et meme cadence que la version mono).
+    # Sensibilisation No-Go, separement par cote (meme regle et meme cadence que le mono).
     if mouse_session.nogo_streak_cnt_right >= mouse.nogo_streak_incr[0]:
         old_tau_nogo_r, gain_nogo_r_cur = mouse.exp_update_nogo_right
         new_tau_nogo_r = min(old_tau_nogo_r + mouse.nogo_streak_incr[1], mouse.nogo_tau_max)

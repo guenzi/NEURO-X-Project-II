@@ -30,6 +30,7 @@ def init_results_dir(base_dir: Optional[str] = None, suffix: str = "") -> str:
 
 
 def _slugify(text: str) -> str:
+    # Titre de plot -> nom de fichier propre, utilise par _save_fig si save_name est vide.
     text = text.strip().lower()
     out = []
     for ch in text:
@@ -232,9 +233,8 @@ def plot_traces(time_vect,
     _save_fig(fig, category="traces", name=save_name or title)
 
 
-# Diagnostic du desapprentissage (Go/No-Go) sur le run reel : reprend les 3 memes plots que
-# l'ancien demo_desapprentissage.py, mais construits a partir des sessions WDT concatenees du
-# pipeline normal — pas d'un scenario Acquisition/Extinction/Reapprentissage a part.
+# Diagnostic du desapprentissage (Go/No-Go), construit a partir des sessions WDT concatenees
+# du pipeline normal.
 def plot_delearning_diagnostics(
     session_info,
     mouse_sessions: List,
@@ -246,6 +246,9 @@ def plot_delearning_diagnostics(
     trial_smooth_win: int = 20,
     delearning_until_session: Optional[int] = None,
 ) -> None:
+    # 1. Hit Rate par essai (derniere session recompensee / 1ere extinction / 1ere reacquisition)
+    # 2. E_go vs E_nogo dans le temps
+    # 3. Hit Rate moyen par session, en barres
     def _to_1d(arr):
         a = np.asarray(arr)
         return a[:, 0] if a.ndim == 2 and a.shape[1] == 1 else a
@@ -257,7 +260,7 @@ def plot_delearning_diagnostics(
     boundary_t = (delearning_from_session - 1) * T * dt
     reacq_t = (delearning_until_session - 1) * T * dt if delearning_until_session is not None else None
 
-    win = max(1, int(round(30.0 / dt)))  # moyenne glissante 30s, meme fenetre que l'ancien demo
+    win = max(1, int(round(30.0 / dt)))  # fenetre de moyenne glissante : 30s
 
     def smooth(x):
         return np.convolve(x, np.ones(win) / win, mode="same")
@@ -534,48 +537,49 @@ def plot_value_cost_trials(
     _save_fig(fig, category="traces", name=save_name or title)
 
 
-# HR & FA moyens par session (liste)
-def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
-                             labels: List[str],
-                             title: str = "HR & FA average per session",
-                             save_name: Optional[str] = None):
-    """
-    performance_list: list of np.ndarray, chacun = sortie de function_performance_wdt pour une session
-                      colonnes: [t, stim_amp, lick_detected, latency, reward_detected, outcome]
-    labels:           list[str], ex. ["WDT1", "WDT2", ...]
-    """
-    hr_vals, fa_vals = [], []
-
-    for perf in performance_list:
-        if perf is None or perf.size == 0:
-            hr_vals.append(np.nan)
-            fa_vals.append(np.nan)
-            continue
-
-        stim_trials = perf[:, 1] > 0
-        catch_trials = perf[:, 1] == 0
-        hit_trials = perf[:, 5] == 1
-        fa_trials = perf[:, 5] == 3
-
-        hr = np.sum(hit_trials & stim_trials) / np.sum(stim_trials) if np.sum(stim_trials) > 0 else np.nan
-        fa = np.sum(fa_trials & catch_trials) / np.sum(catch_trials) if np.sum(catch_trials) > 0 else np.nan
-
-        hr_vals.append(hr)
-        fa_vals.append(fa)
-
-    x = np.arange(len(labels))
-    fig = plt.figure(figsize=(8, 5))
-    plt.plot(x, hr_vals, 'o-', label='Hit Rate (HR)')
-    plt.plot(x, fa_vals, 'o-', label='False Alarm (FA)')
-    plt.xticks(x, labels)
-    plt.ylim(0, 1)
-    plt.ylabel('Rate')
-    plt.xlabel('Session')
-    plt.title(title)
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    _save_fig(fig, category="learning_curve", name=save_name or title)
+# ancien modele, non utilise
+# # HR & FA moyens par session (liste)
+# def plot_hr_fa_over_sessions(performance_list: List[np.ndarray],
+#                              labels: List[str],
+#                              title: str = "HR & FA average per session",
+#                              save_name: Optional[str] = None):
+#     """
+#     performance_list: list of np.ndarray, chacun = sortie de function_performance_wdt pour une session
+#                       colonnes: [t, stim_amp, lick_detected, latency, reward_detected, outcome]
+#     labels:           list[str], ex. ["WDT1", "WDT2", ...]
+#     """
+#     hr_vals, fa_vals = [], []
+#
+#     for perf in performance_list:
+#         if perf is None or perf.size == 0:
+#             hr_vals.append(np.nan)
+#             fa_vals.append(np.nan)
+#             continue
+#
+#         stim_trials = perf[:, 1] > 0
+#         catch_trials = perf[:, 1] == 0
+#         hit_trials = perf[:, 5] == 1
+#         fa_trials = perf[:, 5] == 3
+#
+#         hr = np.sum(hit_trials & stim_trials) / np.sum(stim_trials) if np.sum(stim_trials) > 0 else np.nan
+#         fa = np.sum(fa_trials & catch_trials) / np.sum(catch_trials) if np.sum(catch_trials) > 0 else np.nan
+#
+#         hr_vals.append(hr)
+#         fa_vals.append(fa)
+#
+#     x = np.arange(len(labels))
+#     fig = plt.figure(figsize=(8, 5))
+#     plt.plot(x, hr_vals, 'o-', label='Hit Rate (HR)')
+#     plt.plot(x, fa_vals, 'o-', label='False Alarm (FA)')
+#     plt.xticks(x, labels)
+#     plt.ylim(0, 1)
+#     plt.ylabel('Rate')
+#     plt.xlabel('Session')
+#     plt.title(title)
+#     plt.grid(True, alpha=0.3)
+#     plt.legend()
+#     plt.tight_layout()
+#     _save_fig(fig, category="learning_curve", name=save_name or title)
 
 
 # HR/FA par blocs à l’intérieur d’une session
@@ -860,127 +864,128 @@ def plot_single_session_rates(
     return float(hr), float(fa), float(dprime)
 
 
-def plot_multi_mouse_single_session(
-    performance_list: Iterable[Optional[np.ndarray]],
-    mouse_labels: List[str],
-    title: str = "HR vs FA per mouse (single session)",
-    zero_when_empty: bool = True,
-    jitter: float = 0.06,
-    annotate_dprime: bool = True,
-    ax: Optional[plt.Axes] = None,
-    show: bool = True,
-    save_name: Optional[str] = None
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Superpose HR (x) et FA (o) pour plusieurs souris sur UNE session.
-    X = ["HR","FA"], Y = P(Lick)∈[0,1]. d′ annoté près de HR.
-    """
-    perfs = list(performance_list)
-    if len(perfs) != len(mouse_labels):
-        raise ValueError("mouse_labels doit avoir la même longueur que performance_list.")
-
-    n = len(perfs)
-    hr_arr = np.empty(n, dtype=float)
-    fa_arr = np.empty(n, dtype=float)
-    dp_arr = np.empty(n, dtype=float)
-
-    created_fig = False
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(7.5, 5))
-        created_fig = True
-
-    x_hr, x_fa = 1.0, 2.0
-    offs = np.linspace(-jitter, jitter, n) if n > 1 else np.array([0.0])
-
-    for i, (perf, label) in enumerate(zip(perfs, mouse_labels)):
-        hr, fa, dp = session_rates(perf, zero_when_empty=zero_when_empty)
-        hr_arr[i], fa_arr[i], dp_arr[i] = hr, fa, dp
-
-        (line_hr,) = ax.plot([x_hr + offs[i]], [hr], linestyle="None", marker="x",
-                             label=f"{label} — d′={dp:.2f}")
-        color = line_hr.get_color()
-        ax.plot([x_fa + offs[i]], [fa], linestyle="None", marker="o",
-                color=color, label="_nolegend_")
-
-        if annotate_dprime:
-            ax.annotate(f"{dp:.2f}",
-                        xy=(x_hr + offs[i], hr),
-                        xytext=(x_hr + offs[i] + 0.03, min(1.0, hr + 0.06)),
-                        fontsize=9, color=color)
-
-    ax.set_ylim(0, 1)
-    ax.set_xticks([x_hr, x_fa]); ax.set_xticklabels(["HR", "FA"])
-    ax.set_ylabel("P(Lick)"); ax.set_title(title)
-    ax.grid(True, axis="y", alpha=0.3)
-    ax.legend(ncols=1, frameon=True)
-
-    if created_fig and show:
-        plt.tight_layout(); _save_fig(fig, category="population", name=save_name or title)
-    return hr_arr, fa_arr, dp_arr
-
-
-def overlay_group_stats_on_current_axes(hr_arr: np.ndarray,
-                                        fa_arr: np.ndarray,
-                                        dp_arr: np.ndarray,
-                                        label: str = "Mean ± SD",
-                                        session_name: Optional[str] = None,
-                                        update_title: bool = True,
-                                        show_errorbars: bool = True) -> None:
-    """
-    Superpose sur la figure courante:
-      - HR_mean ± SD et FA_mean ± SD (optionnel)
-      - d′ moyen annoté
-      - Encadré avec μ, σ, σ² pour HR & FA
-    À appeler juste après plot_multi_mouse_single_session(...).
-    """
-    ax = plt.gca()
-    x_hr, x_fa = 1.0, 2.0
-
-    hr_mean = float(np.nanmean(hr_arr)) if hr_arr.size else np.nan
-    fa_mean = float(np.nanmean(fa_arr)) if fa_arr.size else np.nan
-    dp_mean = float(np.nanmean(dp_arr)) if dp_arr.size else np.nan
-
-    hr_sd = float(np.nanstd(hr_arr, ddof=1)) if hr_arr.size > 1 else 0.0
-    fa_sd = float(np.nanstd(fa_arr, ddof=1)) if fa_arr.size > 1 else 0.0
-
-    hr_var = float(np.nanvar(hr_arr, ddof=1)) if hr_arr.size > 1 else 0.0
-    fa_var = float(np.nanvar(fa_arr, ddof=1)) if fa_arr.size > 1 else 0.0
-
-    if show_errorbars:
-        ax.errorbar([x_hr], [hr_mean], yerr=[hr_sd], fmt='s', ms=8, capsize=4, label=f"{label} HR")
-        ax.errorbar([x_fa], [fa_mean], yerr=[fa_sd], fmt='s', ms=8, capsize=4, label=f"{label} FA")
-
-    if np.isfinite(dp_mean):
-        ax.annotate(f"mean d′ = {dp_mean:.2f}",
-                    xy=(x_hr, hr_mean),
-                    xytext=(x_hr + 0.08, min(1.0, hr_mean + 0.10)),
-                    fontsize=10,
-                    fontweight="bold",
-                    bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="gray", alpha=0.85))
-
-    stats_lines = [
-        f"HR: μ={hr_mean:.2f}, σ={hr_sd:.2f}, σ²={hr_var:.3f}",
-        f"FA: μ={fa_mean:.2f}, σ={fa_sd:.2f}, σ²={fa_var:.3f}",
-    ]
-    if np.isfinite(dp_mean):
-        stats_lines.append(f"d′ mean: {dp_mean:.2f}")
-
-    ax.text(0.02, 0.98, "\n".join(stats_lines),
-            transform=ax.transAxes, va="top", ha="left",
-            fontsize=10,
-            bbox=dict(boxstyle="round,pad=0.30", fc="white", ec="gray", alpha=0.9))
-
-    ax.set_ylim(0, 1)
-    ax.grid(True, axis="y", alpha=0.3)
-    ax.legend(frameon=True)
-
-    if session_name and update_title:
-        old_title = ax.get_title()
-        if old_title and session_name not in old_title:
-            ax.set_title(f"{old_title}\nSession: {session_name}")
-        elif not old_title:
-            ax.set_title(f"Session: {session_name}")
-
+# ancien modele, non utilise
+# def plot_multi_mouse_single_session(
+#     performance_list: Iterable[Optional[np.ndarray]],
+#     mouse_labels: List[str],
+#     title: str = "HR vs FA per mouse (single session)",
+#     zero_when_empty: bool = True,
+#     jitter: float = 0.06,
+#     annotate_dprime: bool = True,
+#     ax: Optional[plt.Axes] = None,
+#     show: bool = True,
+#     save_name: Optional[str] = None
+# ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+#     """
+#     Superpose HR (x) et FA (o) pour plusieurs souris sur UNE session.
+#     X = ["HR","FA"], Y = P(Lick)∈[0,1]. d′ annoté près de HR.
+#     """
+#     perfs = list(performance_list)
+#     if len(perfs) != len(mouse_labels):
+#         raise ValueError("mouse_labels doit avoir la même longueur que performance_list.")
+#
+#     n = len(perfs)
+#     hr_arr = np.empty(n, dtype=float)
+#     fa_arr = np.empty(n, dtype=float)
+#     dp_arr = np.empty(n, dtype=float)
+#
+#     created_fig = False
+#     if ax is None:
+#         fig, ax = plt.subplots(figsize=(7.5, 5))
+#         created_fig = True
+#
+#     x_hr, x_fa = 1.0, 2.0
+#     offs = np.linspace(-jitter, jitter, n) if n > 1 else np.array([0.0])
+#
+#     for i, (perf, label) in enumerate(zip(perfs, mouse_labels)):
+#         hr, fa, dp = session_rates(perf, zero_when_empty=zero_when_empty)
+#         hr_arr[i], fa_arr[i], dp_arr[i] = hr, fa, dp
+#
+#         (line_hr,) = ax.plot([x_hr + offs[i]], [hr], linestyle="None", marker="x",
+#                              label=f"{label} — d′={dp:.2f}")
+#         color = line_hr.get_color()
+#         ax.plot([x_fa + offs[i]], [fa], linestyle="None", marker="o",
+#                 color=color, label="_nolegend_")
+#
+#         if annotate_dprime:
+#             ax.annotate(f"{dp:.2f}",
+#                         xy=(x_hr + offs[i], hr),
+#                         xytext=(x_hr + offs[i] + 0.03, min(1.0, hr + 0.06)),
+#                         fontsize=9, color=color)
+#
+#     ax.set_ylim(0, 1)
+#     ax.set_xticks([x_hr, x_fa]); ax.set_xticklabels(["HR", "FA"])
+#     ax.set_ylabel("P(Lick)"); ax.set_title(title)
+#     ax.grid(True, axis="y", alpha=0.3)
+#     ax.legend(ncols=1, frameon=True)
+#
+#     if created_fig and show:
+#         plt.tight_layout(); _save_fig(fig, category="population", name=save_name or title)
+#     return hr_arr, fa_arr, dp_arr
+#
+#
+# def overlay_group_stats_on_current_axes(hr_arr: np.ndarray,
+#                                         fa_arr: np.ndarray,
+#                                         dp_arr: np.ndarray,
+#                                         label: str = "Mean ± SD",
+#                                         session_name: Optional[str] = None,
+#                                         update_title: bool = True,
+#                                         show_errorbars: bool = True) -> None:
+#     """
+#     Superpose sur la figure courante:
+#       - HR_mean ± SD et FA_mean ± SD (optionnel)
+#       - d′ moyen annoté
+#       - Encadré avec μ, σ, σ² pour HR & FA
+#     À appeler juste après plot_multi_mouse_single_session(...).
+#     """
+#     ax = plt.gca()
+#     x_hr, x_fa = 1.0, 2.0
+#
+#     hr_mean = float(np.nanmean(hr_arr)) if hr_arr.size else np.nan
+#     fa_mean = float(np.nanmean(fa_arr)) if fa_arr.size else np.nan
+#     dp_mean = float(np.nanmean(dp_arr)) if dp_arr.size else np.nan
+#
+#     hr_sd = float(np.nanstd(hr_arr, ddof=1)) if hr_arr.size > 1 else 0.0
+#     fa_sd = float(np.nanstd(fa_arr, ddof=1)) if fa_arr.size > 1 else 0.0
+#
+#     hr_var = float(np.nanvar(hr_arr, ddof=1)) if hr_arr.size > 1 else 0.0
+#     fa_var = float(np.nanvar(fa_arr, ddof=1)) if fa_arr.size > 1 else 0.0
+#
+#     if show_errorbars:
+#         ax.errorbar([x_hr], [hr_mean], yerr=[hr_sd], fmt='s', ms=8, capsize=4, label=f"{label} HR")
+#         ax.errorbar([x_fa], [fa_mean], yerr=[fa_sd], fmt='s', ms=8, capsize=4, label=f"{label} FA")
+#
+#     if np.isfinite(dp_mean):
+#         ax.annotate(f"mean d′ = {dp_mean:.2f}",
+#                     xy=(x_hr, hr_mean),
+#                     xytext=(x_hr + 0.08, min(1.0, hr_mean + 0.10)),
+#                     fontsize=10,
+#                     fontweight="bold",
+#                     bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="gray", alpha=0.85))
+#
+#     stats_lines = [
+#         f"HR: μ={hr_mean:.2f}, σ={hr_sd:.2f}, σ²={hr_var:.3f}",
+#         f"FA: μ={fa_mean:.2f}, σ={fa_sd:.2f}, σ²={fa_var:.3f}",
+#     ]
+#     if np.isfinite(dp_mean):
+#         stats_lines.append(f"d′ mean: {dp_mean:.2f}")
+#
+#     ax.text(0.02, 0.98, "\n".join(stats_lines),
+#             transform=ax.transAxes, va="top", ha="left",
+#             fontsize=10,
+#             bbox=dict(boxstyle="round,pad=0.30", fc="white", ec="gray", alpha=0.9))
+#
+#     ax.set_ylim(0, 1)
+#     ax.grid(True, axis="y", alpha=0.3)
+#     ax.legend(frameon=True)
+#
+#     if session_name and update_title:
+#         old_title = ax.get_title()
+#         if old_title and session_name not in old_title:
+#             ax.set_title(f"{old_title}\nSession: {session_name}")
+#         elif not old_title:
+#             ax.set_title(f"Session: {session_name}")
+#
 
 # RPE par lick (scatter)
 def plot_rpe_per_lick(rpe_table: np.ndarray,
@@ -1340,11 +1345,10 @@ def plot_single_session_rates_wa(perf: Optional[np.ndarray], title: str = "HR(st
 def plot_stim_gains(wdt_bundle, config, title: str = "Evolution des gains de stimuli",
                     save_name: Optional[str] = None) -> None:
     """
-    Pour chaque session, trace le gain de stimulus de stim1 et stim2 — le meme gain qui monte
-    a la recompense et descend directement au mismatch de contingence (voir
-    Mouse.exp_update_stim1_wa/2_wa, standardise sur le principe de
-    Mouse.stim_gain_noreward_active). Doit s'effondrer pour le stimulus qui cesse d'etre
-    recompense apres le switch, et grimper pour celui qui prend le relais.
+    Pour chaque session, trace le gain de stimulus de stim1 et stim2 (voir
+    Mouse.exp_update_stim1_wa/2_wa) — le meme gain monte a la recompense et descend au
+    mismatch de contingence. S'effondre pour le stimulus qui cesse d'etre recompense apres
+    le switch, et grimpe pour celui qui prend le relais.
     """
     labels = wdt_bundle.labels
     xs = np.arange(1, len(labels) + 1)

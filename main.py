@@ -1,21 +1,14 @@
-# Deroulement : 2 sessions Free Licking + 10 WDT + test psychometrique (test psychometrique
-# absent en whisker/auditif, qui a son propre switch de contingence, cf. WA_SWITCH_SESSION).
-# Trois modes, mutuellement exclusifs (WHISKER_AUD_STIM a priorite sur dual_stim si les deux
-# sont actives par erreur), selon les flags de SimConfig tout en bas :
-#   - dual_stim=False, WHISKER_AUD_STIM=False : un seul stimulus (mono, modele valide).
-#   - dual_stim=True                          : deux stimuli, deux cotes de recompense
-#                                                (deux Expectations independantes, choix de cote).
-#   - WHISKER_AUD_STIM=True                   : deux stimuli (whisker/auditif), UNE SEULE
-#                                                Expectation partagee, switch de contingence
-#                                                WDT->AUD (paradigme historique du projet).
-# La decision de base utilise toujours E_go - E_nogo (architecture Go/No-Go), a l'identique
-# dans les trois modes (une voie No-Go par cote en dual gauche/droite, une voie No-Go par
-# stimulus en whisker/auditif, une voie generale en mono). Pour observer un desapprentissage
-# sur un run normal (mono/dual), fixer DELEARNING_FROM_SESSION (ex. 6) : plus aucune recompense
-# a partir de WDT6, et 3 plots de diagnostic en plus des plots habituels.
-# Pour comparer une population de souris (mono/dual uniquement, learning_stim / noise tires
-# +/- autour de la base, pas de plots individuels), fixer POPULATION_RANGE=True et
-# POPULATION_N_MICE.
+# Construit un SimConfig et appelle la fonction d'orchestration correspondante.
+#
+# Scenarios
+#   mono                                SimConfig()
+#   dual                                SimConfig(dual_stim=True)
+#   whisker/auditif                     SimConfig(WHISKER_AUD_STIM=True)
+#   mono, desapprentissage              SimConfig(DELEARNING_FROM_SESSION=6) --> choisir la session de début de desapprentissage (ici 6 par exemple)
+#   dual, desapprentissage droite       SimConfig(dual_stim=True, DELEARNING_FROM_SESSION=6, DELEARNING_SIDE=1) --> sessions à choix
+#   desapprentissage puis reapprentissage   + DELEARNING_UNTIL_SESSION=7 (avec DELEARNING_FROM_SESSION=5) --> sessions à choix
+#   population mono                     SimConfig(POPULATION_RANGE=True, POPULATION_N_MICE=5) --> range de parametres sur 5 souris, parametres: 
+#   population, balayage p0..p50        + POPULATION_SPREAD_SWEEP=True --> balayage de range de 0% à 50% sur 5 souris, avec 10 répétitions par point de balayage (50 simulations au total)
 
 from models import SimConfig
 from functions import (
@@ -45,8 +38,8 @@ else:
     session_info, mouse = initialization(config)
 
     if config.WHISKER_AUD_STIM:
-        log_fl1 = run_FL1(mouse, session_info, config)      # FL n'a pas de stimulus : la version
-        log_fl2 = run_FL2(mouse, session_info, config, log_fl1)  # mono suffit, rien a adapter.
+        log_fl1 = run_FL1(mouse, session_info, config)
+        log_fl2 = run_FL2(mouse, session_info, config, log_fl1)
 
         wdt_bundle = run_all_wdt_wa(mouse, session_info, config, log_fl2)
 
