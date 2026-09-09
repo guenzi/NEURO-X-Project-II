@@ -143,14 +143,14 @@ def plot_traces(time_vect,
     # Construction des panneaux
     if dual_stim:
         rows = [
-            ("plot_side", time_vect, e_right, "Expectation droite"),
-            ("plot_side", time_vect, e_left, "Expectation gauche"),
+            ("plot_side", time_vect, e_right, "Expectation right"),
+            ("plot_side", time_vect, e_left, "Expectation left"),
         ]
         # Architecture Go/No-Go toujours active : les panneaux No-Go sont toujours affiches.
         if nogo_right is not None:
-            rows.append(("plot_side", time_vect, nogo_right, "Expectation No-Go droite"))
+            rows.append(("plot_side", time_vect, nogo_right, "No-Go Expectation right"))
         if nogo_left is not None:
-            rows.append(("plot_side", time_vect, nogo_left, "Expectation No-Go gauche"))
+            rows.append(("plot_side", time_vect, nogo_left, "No-Go Expectation left"))
     else:
         rows = [("plot", time_vect, expc, "Expectation")]
         if nogo is not None:
@@ -159,8 +159,8 @@ def plot_traces(time_vect,
     if dual_stim:
         p_right = _np.clip(plick, 0, None) if plick is not None else None
         p_left = _np.clip(-plick, 0, None) if plick is not None else None
-        rows.append(("plot_thr", time_vect, p_right, "P(Lick) droite"))
-        rows.append(("plot_thr", time_vect, p_left, "P(Lick) gauche"))
+        rows.append(("plot_thr", time_vect, p_right, "P(Lick) right"))
+        rows.append(("plot_thr", time_vect, p_left, "P(Lick) left"))
     else:
         rows.append(("plot", time_vect, plick, "P(Lick)"))
 
@@ -172,7 +172,7 @@ def plot_traces(time_vect,
     if stim2 is not None and (stim_has_signal or stim2_has_signal):
         # Dual whisker/auditif : deux lignes separees plutot qu'un seul canal "Stim".
         rows.append(("stem", time_vect, stim, "Stim1 (whisker)"))
-        rows.append(("stem", time_vect, stim2, "Stim2 (auditif)"))
+        rows.append(("stem", time_vect, stim2, "Stim2 (auditory)"))
     elif stim_has_signal:
         rows.append(("plot", time_vect, stim, "Stim"))
     else:
@@ -194,11 +194,11 @@ def plot_traces(time_vect,
     # (evite qu'un auto-scale sur une toute petite variation ne trompe la lecture)
     fixed_ylim = {
         "Expectation": (0.0, 1.0),
-        "Expectation droite": (0.0, 1.0),
-        "Expectation gauche": (0.0, 1.0),
+        "Expectation right": (0.0, 1.0),
+        "Expectation left": (0.0, 1.0),
         "Expectation No-Go": (0.0, 1.0),
-        "Expectation No-Go droite": (0.0, 1.0),
-        "Expectation No-Go gauche": (0.0, 1.0),
+        "No-Go Expectation right": (0.0, 1.0),
+        "No-Go Expectation left": (0.0, 1.0),
         "Motivation": (0.0, 1.0),
         "RPE": (-1.05, 1.05),
         "Lick": (-0.05, 1.05),
@@ -213,10 +213,10 @@ def plot_traces(time_vect,
             if label == "P(Lick)":
                 ax.axhline(threshold, linestyle="--", alpha=0.5)
         elif kind == "plot_side":
-            color = "tab:blue" if "droite" in label else "tab:orange"
+            color = "tab:blue" if "right" in label else "tab:orange"
             ax.plot(x, y, color=color, linewidth=0.8)
         elif kind == "plot_thr":
-            color = "tab:blue" if "droite" in label else "tab:orange"
+            color = "tab:blue" if "right" in label else "tab:orange"
             ax.plot(x, y, color=color, linewidth=0.8)
             ax.axhline(threshold, linestyle="--", alpha=0.6, color="gray")
         elif kind == "step":
@@ -271,10 +271,10 @@ def plot_delearning_diagnostics(
     # spontane entre les essais) ni les essais catch (qui restent proches de 0 et diluent le
     # signal), ni les sessions WDT concatenees (pas utile ici, on veut juste les transitions).
     if perfs is not None:
-        panels = [(delearning_from_session - 2, "dernière session récompensée"),
-                  (delearning_from_session - 1, "1ère session de désapprentissage")]
+        panels = [(delearning_from_session - 2, "last rewarded session"),
+                  (delearning_from_session - 1, "1st delearning session")]
         if delearning_until_session is not None:
-            panels.append((delearning_until_session - 1, "1ère session de réapprentissage"))
+            panels.append((delearning_until_session - 1, "1st relearning session"))
 
         def _hit_rate_trial_series(perf, side=None):
             # side=None (mono) : tous les essais stimulus. side=+1/-1 (dual) : uniquement
@@ -296,18 +296,18 @@ def plot_delearning_diagnostics(
             if dual_stim:
                 t_r, resp_r, w = _hit_rate_trial_series(perf, side=1)
                 t_l, resp_l, _ = _hit_rate_trial_series(perf, side=-1)
-                ax.plot(t_r, resp_r, color="tab:blue", label="Hit Rate droite")
-                ax.plot(t_l, resp_l, color="tab:orange", label="Hit Rate gauche")
+                ax.plot(t_r, resp_r, color="tab:blue", label="Hit Rate right")
+                ax.plot(t_l, resp_l, color="tab:orange", label="Hit Rate left")
                 ax.legend(loc="best", fontsize=8)
             else:
                 t, resp_smooth, w = _hit_rate_trial_series(perf)
                 ax.plot(t, resp_smooth, color="tab:blue")
-            ax.set_xlabel("Temps dans la session (s)")
+            ax.set_xlabel("Time in session (s)")
             ax.set_title(f"{labels[s_idx]} — {tag}")
             ax.grid(True, alpha=0.3)
-        axes[0].set_ylabel(f"Hit Rate (moyenne glissante, {trial_smooth_win} essais)")
+        axes[0].set_ylabel(f"Hit Rate (rolling average, {trial_smooth_win} trials)")
         axes[0].set_ylim(-0.02, 1.02)
-        fig.suptitle("Désapprentissage — Hit Rate avant / après coupure de la récompense")
+        fig.suptitle("Delearning — Hit Rate before / after reward cutoff")
         fig.tight_layout()
         _save_fig(fig, category="delearning", name=f"{save_prefix}_1_taux_de_leche")
 
@@ -318,20 +318,20 @@ def plot_delearning_diagnostics(
         el = smooth(np.concatenate([_to_1d(ms.expectation_left) for ms in mouse_sessions]))
         nr = smooth(np.concatenate([_to_1d(ms.expectation_nogo_right) for ms in mouse_sessions]))
         nl = smooth(np.concatenate([_to_1d(ms.expectation_nogo_left) for ms in mouse_sessions]))
-        ax.plot(t_full, er - nr, color="tab:blue", label="Net droite (E_go − E_nogo)")
-        ax.plot(t_full, el - nl, color="tab:orange", label="Net gauche (E_go − E_nogo)")
+        ax.plot(t_full, er - nr, color="tab:blue", label="Net right (E_go − E_nogo)")
+        ax.plot(t_full, el - nl, color="tab:orange", label="Net left (E_go − E_nogo)")
     else:
         e_s = smooth(np.concatenate([_to_1d(ms.expectation) for ms in mouse_sessions]))
         n_s = smooth(np.concatenate([_to_1d(ms.expectation_nogo) for ms in mouse_sessions]))
         ax.plot(t_full, e_s, color="tab:blue", label="Expectation (E_go)")
-        ax.plot(t_full, n_s, color="tab:red", label="Expectation No-Go")
+        ax.plot(t_full, n_s, color="tab:red", label="No-Go Expectation")
         ax.plot(t_full, e_s - n_s, color="black", linewidth=1.5, linestyle="--", label="Net (E_go − E_nogo)")
     ax.axvline(boundary_t, linestyle="--", color="gray", alpha=0.7)
     if reacq_t is not None:
         ax.axvline(reacq_t, linestyle="--", color="tab:green", alpha=0.7)
-    ax.set_xlabel("Temps (s) — sessions WDT concatenees")
-    ax.set_ylabel("Valeur")
-    ax.set_title("Désapprentissage — Expectation vs Expectation No-Go")
+    ax.set_xlabel("Time (s) — concatenated WDT sessions")
+    ax.set_ylabel("Value")
+    ax.set_title("Delearning — Expectation vs No-Go Expectation")
     ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -344,8 +344,8 @@ def plot_delearning_diagnostics(
         x = np.arange(n_sessions)
         width = 0.38
         fig, ax = plt.subplots(figsize=(10, 4.5))
-        bars_r = ax.bar(x - width / 2, hr_right, width, color="tab:blue", label="Hit Rate droite")
-        bars_l = ax.bar(x + width / 2, hr_left, width, color="tab:orange", label="Hit Rate gauche")
+        bars_r = ax.bar(x - width / 2, hr_right, width, color="tab:blue", label="Hit Rate right")
+        bars_l = ax.bar(x + width / 2, hr_left, width, color="tab:orange", label="Hit Rate left")
         for bar, r in zip(list(bars_r) + list(bars_l), hr_right + hr_left):
             ax.text(bar.get_x() + bar.get_width() / 2, r + 0.02, f"{r:.2f}", ha="center", fontsize=7)
         ax.axvline(delearning_from_session - 1.5, linestyle="--", color="gray", alpha=0.7)
@@ -353,8 +353,8 @@ def plot_delearning_diagnostics(
             ax.axvline(delearning_until_session - 1.5, linestyle="--", color="tab:green", alpha=0.7)
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
-        ax.set_ylabel("Hit Rate moyen par session")
-        ax.set_title("Désapprentissage — Hit Rate droite vs gauche par session")
+        ax.set_ylabel("Average Hit Rate per session")
+        ax.set_title("Delearning — Hit Rate right vs left per session")
         ax.legend(loc="best", fontsize=8)
         ax.grid(True, axis="y", alpha=0.3)
         fig.tight_layout()
@@ -379,8 +379,8 @@ def plot_delearning_diagnostics(
         ymax = max(rates) if rates and max(rates) > 0 else 1.0
         for bar, r in zip(bars, rates):
             ax.text(bar.get_x() + bar.get_width() / 2, r + ymax * 0.02, f"{r:.3f}", ha="center", fontsize=8)
-        ax.set_ylabel("Hit Rate moyen par session")
-        ax.set_title("Désapprentissage — Hit Rate moyen par session")
+        ax.set_ylabel("Average Hit Rate per session")
+        ax.set_title("Delearning — Average Hit Rate per session")
         ax.grid(True, axis="y", alpha=0.3)
         fig.tight_layout()
         _save_fig(fig, category="delearning", name=f"{save_prefix}_3_barres_par_session")
@@ -420,11 +420,11 @@ def plot_population_learning_curves(
     ax.set_xlabel("Session")
     ax.set_ylabel("Hit Rate")
     ax.set_ylim(-0.02, 1.02)
-    ax.set_title(f"Population ({n} souris, {'dual' if dual_stim else 'mono'}) — courbes d'apprentissage{title_suffix}")
+    ax.set_title(f"Population ({n} mice, {'dual' if dual_stim else 'mono'}) — learning curves{title_suffix}")
     ax.grid(True, alpha=0.3)
     ax.legend(
         loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8.5,
-        title="Paramètres variables", title_fontsize=9, frameon=True, borderaxespad=0.0,
+        title="Variable parameters", title_fontsize=9, frameon=True, borderaxespad=0.0,
     )
     fig.tight_layout()
     _save_fig(fig, category=category, name=save_name)
@@ -485,20 +485,20 @@ def plot_population_session_progression(
             ax.plot(t / 60.0, hr_smooth, color=color, linewidth=1.8,
                     label=f"{label} — learning_stim={ls_i:.4f}, noise={ns_i:.3f}")
 
-        ax.set_xlabel("Temps dans la session (min)")
+        ax.set_xlabel("Time in session (min)")
         ax.set_ylim(-0.02, 1.02)
         ax.grid(True, alpha=0.3)
         if side is not None:
-            ax.set_title("Droite" if side == 1 else "Gauche")
+            ax.set_title("Right" if side == 1 else "Left")
 
-    axes[0].set_ylabel(f"Hit Rate (lissage ±{smooth_window_s / 60:.0f} min)")
+    axes[0].set_ylabel(f"Hit Rate (smoothing ±{smooth_window_s / 60:.0f} min)")
     fig.suptitle(
-        f"Population ({n} souris, {'dual' if dual_stim else 'mono'}) — "
-        f"évolution du Hit Rate pendant {session_label or 'la session'}{title_suffix}"
+        f"Population ({n} mice, {'dual' if dual_stim else 'mono'}) — "
+        f"Hit Rate progression during {session_label or 'the session'}{title_suffix}"
     )
     axes[-1].legend(
         loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8.5,
-        title="Paramètres variables", title_fontsize=9, frameon=True, borderaxespad=0.0,
+        title="Variable parameters", title_fontsize=9, frameon=True, borderaxespad=0.0,
     )
     fig.tight_layout()
     _save_fig(fig, category=category, name=save_name)
@@ -784,8 +784,8 @@ def plot_session_rates(performance_list: Iterable[Optional[np.ndarray]],
         created_fig = True
 
     if dual_stim:
-        ax.plot(xs, hr_right_arr, linestyle="None", marker="x", color="tab:blue", label="Hit rate droite")
-        ax.plot(xs, hr_left_arr, linestyle="None", marker="x", color="tab:orange", label="Hit rate gauche")
+        ax.plot(xs, hr_right_arr, linestyle="None", marker="x", color="tab:blue", label="Hit rate right")
+        ax.plot(xs, hr_left_arr, linestyle="None", marker="x", color="tab:orange", label="Hit rate left")
         ax.plot(xs, mismatch_arr, linestyle="None", marker="^", color="tab:red", label="Mismatch")
     else:
         ax.plot(xs, hr_arr, linestyle="None", marker="x", label="Hit rate")
@@ -796,8 +796,8 @@ def plot_session_rates(performance_list: Iterable[Optional[np.ndarray]],
 
     ax_d = ax.twinx()
     if dual_stim:
-        ax_d.plot(xs, dp_arr, linestyle="--", marker="o", color="green", label="% essais réussis")
-        ax_d.set_ylabel("% essais réussis"); ax_d.set_ylim(0, 1); ax_d.grid(False)
+        ax_d.plot(xs, dp_arr, linestyle="--", marker="o", color="green", label="% successful trials")
+        ax_d.set_ylabel("% successful trials"); ax_d.set_ylim(0, 1); ax_d.grid(False)
     else:
         ax_d.plot(xs, dp_arr, linestyle="--", marker="o", color="green", label="d′")
         ax_d.set_ylabel("d′"); ax_d.grid(False)
@@ -836,11 +836,11 @@ def plot_single_session_rates(
 
     if dual_stim:
         xs = np.array([1, 2, 3, 4], dtype=float)
-        ax.plot([xs[0]], [hr_right], linestyle="None", marker="x", color="tab:blue", label="HR droite")
-        ax.plot([xs[1]], [hr_left], linestyle="None", marker="x", color="tab:orange", label="HR gauche")
+        ax.plot([xs[0]], [hr_right], linestyle="None", marker="x", color="tab:blue", label="HR right")
+        ax.plot([xs[1]], [hr_left], linestyle="None", marker="x", color="tab:orange", label="HR left")
         ax.plot([xs[2]], [mismatch], linestyle="None", marker="^", color="tab:red", label="Mismatch")
         ax.plot([xs[3]], [fa], linestyle="None", marker="o", label="FA")
-        ax.set_xticks(xs); ax.set_xticklabels(["HR droite", "HR gauche", "Mismatch", "FA"])
+        ax.set_xticks(xs); ax.set_xticklabels(["HR right", "HR left", "Mismatch", "FA"])
     else:
         xs = np.array([1, 2], dtype=float)
         ax.plot([xs[0]], [hr], linestyle="None", marker="x", label="HR")
@@ -1278,7 +1278,7 @@ def plot_wdt_block_rates_wa(performance: np.ndarray, wdt_params, max_trials: int
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(xs, hr1s, linestyle="None", marker="x", label="Hit rate stim1 (whisker)")
-    ax.plot(xs, hr2s, linestyle="None", marker="^", label="Hit rate stim2 (auditif)")
+    ax.plot(xs, hr2s, linestyle="None", marker="^", label="Hit rate stim2 (auditory)")
     ax.plot(xs, fas, linestyle="None", marker="o", label="False alarm (catch)")
     ax.set_xlim(0, max_trials); ax.set_ylim(0, 1)
     ax.set_xlabel("Trial #"); ax.set_ylabel("P(Lick)")
@@ -1308,10 +1308,10 @@ def plot_session_rates_wa(performance_list: Iterable[Optional[np.ndarray]], sess
 
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(xs, hr1_arr, linestyle="-", marker="x", color="tab:blue", label="Hit rate stim1 (whisker)")
-    ax.plot(xs, hr2_arr, linestyle="-", marker="^", color="tab:orange", label="Hit rate stim2 (auditif)")
+    ax.plot(xs, hr2_arr, linestyle="-", marker="^", color="tab:orange", label="Hit rate stim2 (auditory)")
     ax.plot(xs, fa_arr, linestyle="-", marker="o", color="tab:green", label="False alarm (catch)")
     if switch_session is not None and 1 <= switch_session <= len(xs):
-        ax.axvline(switch_session - 0.5, linestyle="--", color="gray", alpha=0.6, label="switch de contingence")
+        ax.axvline(switch_session - 0.5, linestyle="--", color="gray", alpha=0.6, label="contingency switch")
     ax.set_ylim(0, 1); ax.set_xticks(xs); ax.set_xticklabels(session_labels)
     ax.set_xlabel("Sessions"); ax.set_ylabel("P(Lick)")
     ax.set_title(title); ax.grid(True, axis="y", alpha=0.3)
@@ -1342,7 +1342,7 @@ def plot_single_session_rates_wa(perf: Optional[np.ndarray], title: str = "HR(st
     return float(hr1), float(hr2), float(fa)
 
 
-def plot_stim_gains(wdt_bundle, config, title: str = "Evolution des gains de stimuli",
+def plot_stim_gains(wdt_bundle, config, title: str = "Stimulus gain evolution",
                     save_name: Optional[str] = None) -> None:
     """
     Pour chaque session, trace le gain de stimulus de stim1 et stim2 (voir
@@ -1357,9 +1357,9 @@ def plot_stim_gains(wdt_bundle, config, title: str = "Evolution des gains de sti
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
     ax.plot(xs, g1, linestyle="-", marker="x", color="tab:blue", linewidth=2, label="Gain stim1 (whisker)")
-    ax.plot(xs, g2, linestyle="-", marker="^", color="tab:orange", linewidth=2, label="Gain stim2 (auditif)")
+    ax.plot(xs, g2, linestyle="-", marker="^", color="tab:orange", linewidth=2, label="Gain stim2 (auditory)")
 
-    ax.axvline(config.WA_SWITCH_SESSION - 0.5, linestyle="--", color="gray", alpha=0.6, label="switch de contingence")
+    ax.axvline(config.WA_SWITCH_SESSION - 0.5, linestyle="--", color="gray", alpha=0.6, label="contingency switch")
     ax.axhline(0.0, linestyle="-", color="black", alpha=0.3, linewidth=0.8)
     ax.set_xticks(xs); ax.set_xticklabels(labels)
     ax.set_xlabel("Sessions"); ax.set_ylabel("Gain")

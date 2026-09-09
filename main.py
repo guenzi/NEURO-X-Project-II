@@ -30,7 +30,7 @@ from functions import (
     run_population,
 )
 
-config = SimConfig(dual_stim=True, POPULATION_RANGE=True, POPULATION_N_MICE=5, POPULATION_SPREAD_SWEEP=True)
+config = SimConfig(dual_stim=False, DELEARNING_FROM_SESSION=5, DELEARNING_UNTIL_SESSION=7)
 
 if config.POPULATION_RANGE:
     run_population(config)

@@ -971,7 +971,7 @@ def plot_all_results(
         # satiete intra-session sur V*M-C) pour voir la "vraie" performance (ce que E encode).
         wdt_perfs_norm = [_normalize_perf_for_motivation(r, False, config) for r in wdt_bundle.results]
         plot_session_rates(wdt_perfs_norm, wdt_bundle.labels,
-                            title="Learning — HR, FA & d′ (WDT1..WDT10) — normalisé Motivation=1.0",
+                            title="Learning — HR, FA & d′ (WDT1..WDT10) — normalized Motivation=1.0",
                             save_name="hr_fa_dprime_all_sessions_normalized_motivation")
 
     if config.PLOT_SINGLE_SESSION_ALL:
@@ -1531,7 +1531,7 @@ def plot_all_results_wa(
         for lbl, result in zip(wdt_bundle.labels, wdt_bundle.results):
             plot_single_session_rates_wa(result.perf, title=f"{lbl} — HR(stim1/stim2) vs FA", save_name=lbl.lower())
 
-    plot_stim_gains(wdt_bundle, config, title="Evolution des gains de stimuli",
+    plot_stim_gains(wdt_bundle, config, title="Stimulus gain evolution",
                     save_name="stim_gains_evolution")
 
     if config.PLOT_RPE_ALL:
@@ -2257,14 +2257,14 @@ def plot_all_results_dualstim(
 
     if config.PLOT_SESSIONS_COMPARISON:
         wdt_perfs = [r.perf for r in wdt_bundle.results]
-        plot_session_rates(wdt_perfs, wdt_bundle.labels, title="Learning — HR, Mismatch, FA & % essais réussis (WDT1..WDT10)",
+        plot_session_rates(wdt_perfs, wdt_bundle.labels, title="Learning — HR, Mismatch, FA & % successful trials (WDT1..WDT10)",
                             save_name="hr_fa_dprime_all_sessions", dual_stim=True)
 
         # Meme courbe, mais recalculee a Motivation=1.0 tout du long (annule l'effet de
         # satiete intra-session sur V*M-C) pour voir la "vraie" performance (ce que E encode).
         wdt_perfs_norm = [_normalize_perf_for_motivation(r, True, config) for r in wdt_bundle.results]
         plot_session_rates(wdt_perfs_norm, wdt_bundle.labels,
-                            title="Learning — HR, Mismatch, FA & % essais réussis (WDT1..WDT10) — normalisé Motivation=1.0",
+                            title="Learning — HR, Mismatch, FA & % successful trials (WDT1..WDT10) — normalized Motivation=1.0",
                             save_name="hr_fa_dprime_all_sessions_normalized_motivation", dual_stim=True)
 
     if config.PLOT_SINGLE_SESSION_ALL:
@@ -2410,7 +2410,7 @@ def run_population(config: SimConfig) -> None:
         plot_population_learning_curves(
             records_norm, dual_stim=quiet.dual_stim,
             save_name="population_learning_curves_normalized_motivation",
-            title_suffix=f"{title_suffix} — normalisé Motivation=1.0", category=category,
+            title_suffix=f"{title_suffix} — normalized Motivation=1.0", category=category,
         )
 
         n_sessions = min(len(r[3].results) for r in records) if records else 0
