@@ -3,10 +3,7 @@
 Simulation d'une souris qui apprend une tâche de détection (Whisker Detection Task, WDT) par
 renforcement. Le but est de reproduire les courbes d'apprentissage, l'effet du bruit, le
 désapprentissage/réapprentissage et la variabilité inter-individus qu'on observe chez de
-vraies souris, avec un modèle simple (Expectation + décision seuillée) mais complet.
-
-Ce document décrit ce que le code fait aujourd'hui, pas l'historique des versions ou des
-idées abandonnées en cours de route.
+vraies souris, avec un modèle simple (Expectation + décision seuillée).
 
 ## Déroulement d'une simulation
 
