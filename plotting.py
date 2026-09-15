@@ -202,9 +202,10 @@ def plot_traces(time_vect,
         "Motivation": (0.0, 1.0),
         "RPE": (-1.05, 1.05),
         "Lick": (-0.05, 1.05),
-        # Uncertainty n'a pas de bornes fixes: contrairement aux autres grandeurs,
-        # sa plage reellement atteinte varie beaucoup d'une session a l'autre (souvent
-        # tres inferieure a U_max=1.0) — un axe fixe [0,1] ecraserait la variation utile.
+        "P(Lick)": (0.0, 1.0),
+        "P(Lick) right": (0.0, 1.0),
+        "P(Lick) left": (0.0, 1.0),
+        "Uncertainty": (0.0, 1.0),
     }
 
     for ax, (kind, x, y, label) in zip(axs, rows):

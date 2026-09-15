@@ -79,6 +79,13 @@ déclenchement ne compte que les bouts qui tombent dans la fenêtre de réponse 
 le léchage spontané entre les essais, donc il ne s'active quasiment jamais avant qu'un vrai
 désapprentissage soit en cours.
 
+En pratique, avec un désapprentissage par défaut (`DELEARNING_FROM_SESSION`), ce mécanisme ne
+se déclenche presque jamais non plus : le streak plafonne typiquement à 3 sans jamais atteindre
+4, parce que le noyau rapide de non-récompense de E_go (tau ~4s) pousse la souris à arrêter de
+lécher avant qu'un 4e échec consécutif ne soit compté. La sensibilisation reste donc un
+mécanisme présent dans le code mais quasi inactif dans les scénarios simulés jusqu'ici — à
+garder en tête avant de la présenter comme un mécanisme réellement à l'œuvre.
+
 ## Le gain de stimulus, et pourquoi il doit aussi pouvoir baisser
 
 Quand un stimulus est présenté, il injecte un boost anticipatoire dans E_go, proportionnel à
@@ -173,10 +180,14 @@ Deux mécanismes distincts, à ne pas confondre :
   comparatifs — pas de traces individuelles. Avec `POPULATION_SPREAD_SWEEP=True`, le run se
   répète pour chaque pourcentage de `POPULATION_SWEEP_VALUES` (0/10/20/30/40/50% par défaut),
   chacun dans son propre sous-dossier `population/p{pourcentage}/`.
-- **`PLOT_STOCHASTIC_IN_POPULATION`** (mono uniquement, actif par défaut mais annexe à un run
-  normal) : à la fin d'un run mono normal, relance une petite cohorte indépendante
-  (`N_MICE`/`NOISE_GAIN`/`LEARNING_STIM`/`SESSION_NAME`), plus simple que le mode population
-  complet, juste pour visualiser la variabilité Hit Rate/False Alarm sur une session donnée.
+- **`PLOT_STOCHASTIC_IN_POPULATION`** (mono uniquement, **désactivé par défaut**, annexe à un
+  run normal) : si activé, relance à la fin d'un run mono normal une petite cohorte
+  indépendante (`N_MICE`/`NOISE_GAIN`/`LEARNING_STIM`/`SESSION_NAME`), plus simple que le mode
+  population complet, juste pour visualiser la variabilité Hit Rate/False Alarm sur une session
+  donnée. Désactivé par défaut car son moteur (`simulate_mouse_and_get_session_perf`) construit
+  sa souris via `Mouse()` nu, sans passer par `_build_mouse`/`SimConfig` — plusieurs paramètres
+  (coût, seuils de lick, bloc No-Go/sensibilisation) y diffèrent donc de ceux utilisés partout
+  ailleurs dans le projet.
 
 ## Effet de la Motivation intra-session
 

@@ -33,8 +33,8 @@ class SessionBaseInfo:
 class Mouse:
     """Parametres d'une souris (constants ou appris) et reglages de la decision."""
     noise: tuple = (1.2, 0.4)                   # bruit Gamma Nd : (forme, echelle)
-    lick_thrs: float = 1.0                      # seuil de decision en Free Licking
-    lick_thrs_wdt: float = 1.0                  # seuil de decision en WDT
+    lick_thrs: float = 1.0                      # seuil de decision en Free Licking — OVERRIDDEN par SimConfig.LICK_THRS_FL (0.3) via _build_mouse(), valeur ici jamais utilisee en pratique
+    lick_thrs_wdt: float = 1.0                  # seuil de decision en WDT — OVERRIDDEN par SimConfig.LICK_THRS_WDT (0.4) via _build_mouse(), valeur ici jamais utilisee en pratique
     motivation: tuple = (1.0, 0.003)            # (valeur initiale, perte par reward) de M
     exp_update_reward: tuple = (2000, 0.3)      # (tau, gain) de E_go a la recompense
     exp_update_no_reward: tuple = (4, 0.4)      # (tau, gain) de E_go au lick non recompense
@@ -43,8 +43,8 @@ class Mouse:
     learning_stim: float = 0.004                # taux d'apprentissage du gain de stimulus
     tau_eligibility: float = 2.0                # constante de temps de la trace d'eligibilite
 
-    reward_value: float = 1.0                   # V du gate V*M - C
-    cost: float = 0.0                           # C du gate V*M - C
+    reward_value: float = 1.0                   # V du gate V*M - C — OVERRIDDEN par SimConfig.REWARD_VALUE (meme valeur, 1.0), redondant mais sans risque
+    cost: float = 0.0                           # C du gate V*M - C — OVERRIDDEN par SimConfig.COST (0.25) via _build_mouse(), valeur ici jamais utilisee en pratique
 
     # D = [E/(1+e^{A.(U-U0)}) + Nd/(1+e^{-A.(U-U0)})] . [V.M - C]
     decision_slope: float = 5.0                 # A pour Free Licking
@@ -56,14 +56,20 @@ class Mouse:
     # Voie No-Go : E_nogo s'oppose a E_go dans la decision (E_go - E_nogo), inhibition plus
     # lente et plus persistante. Recurrence a chaque bin (comme motivation/uncertainty), pas
     # injection de noyau futur.
-    exp_update_nogo: tuple = (8.0, 0.15)        # (tau, gain) de E_nogo, mono
-    exp_update_nogo_right: tuple = (8.0, 0.15)  # idem, cote droit (dual)
-    exp_update_nogo_left: tuple = (8.0, 0.15)   # idem, cote gauche (dual)
-    nogo_relief: float = 0.4                    # fraction de E_nogo effacee a chaque reward
-    nogo_streak_incr: tuple = (2, 0.0)          # (seuil de bouts non recompenses consecutifs, increment de tau_nogo)
-    nogo_tau_max: float = 8.0                   # plafond de tau_nogo
-    learning_nogo_gain: float = 0.0             # taux d'apprentissage du gain No-Go (0 = desactive)
-    nogo_gain_max: float = 0.6                  # plafond du gain No-Go appris
+    # Les 6 champs suivants sont tous OVERRIDDEN par SimConfig via _build_mouse() dans
+    # chaque experience reelle (initialization()/run_population()) — les valeurs ici ne
+    # sont jamais utilisees en pratique. nogo_streak_incr, nogo_tau_max et
+    # learning_nogo_gain ont une vraie valeur differente en SimConfig (voir commentaires) ;
+    # exp_update_nogo(_right/_left), nogo_relief et nogo_gain_max ont la meme valeur des
+    # deux cotes, redondants mais sans risque.
+    exp_update_nogo: tuple = (8.0, 0.15)        # (tau, gain) de E_nogo, mono — = SimConfig (NOGO_TAU, NOGO_GAIN)
+    exp_update_nogo_right: tuple = (8.0, 0.15)  # idem, cote droit (dual) — = SimConfig (NOGO_TAU, NOGO_GAIN)
+    exp_update_nogo_left: tuple = (8.0, 0.15)   # idem, cote gauche (dual) — = SimConfig (NOGO_TAU, NOGO_GAIN)
+    nogo_relief: float = 0.4                    # fraction de E_nogo effacee a chaque reward — = SimConfig.NOGO_RELIEF
+    nogo_streak_incr: tuple = (2, 0.0)          # (seuil de bouts non recompenses consecutifs, increment de tau_nogo) — SimConfig utilise (4, 1.0)
+    nogo_tau_max: float = 8.0                   # plafond de tau_nogo — SimConfig.NOGO_TAU_MAX utilise 60.0
+    learning_nogo_gain: float = 0.0             # taux d'apprentissage du gain No-Go (0 = desactive) — SimConfig.LEARNING_NOGO_GAIN utilise 0.05 (actif)
+    nogo_gain_max: float = 0.6                  # plafond du gain No-Go appris — = SimConfig.NOGO_GAIN_MAX
 
     # Choix du cote (dual) : bruit Gumbel independant sur E_droite/E_gauche puis argmax
     # (Gumbel-max trick), equivalent a une sigmoide sur leur difference.
@@ -77,7 +83,7 @@ class Mouse:
     # Baisse symetrique de stim_gain_right/left quand un lick correct n'est pas recompense a
     # cause du tirage de reward_prob (jamais d'un mismatch ou du cooldown seul) — inerte hors
     # desapprentissage puisque reward_prob=1.0 par defaut.
-    stim_gain_noreward_active: bool = False
+    stim_gain_noreward_active: bool = False     # OVERRIDDEN par SimConfig.STIM_GAIN_NOREWARD_ACTIVE (True) via _build_mouse(), valeur ici jamais utilisee en pratique
 
     # Dual : generalisation sensorielle precoce, un stimulus pousse aussi un peu le canal
     # oppose. Diminue tout seul avec l'entrainement puisque stim_gain_right/left grandissent
@@ -230,7 +236,11 @@ class SimConfig:
     MAX_TRIALS_BLOCKS: int = 400                 # taille des blocs pour PLOT_BLOCK_HRFA
     PLOT_SESSIONS_COMPARISON: bool = True        # courbe d'apprentissage WDT1..N (learning_curve/)
     PLOT_SINGLE_SESSION_ALL: bool = True         # resume par session (session_summary/)
-    PLOT_STOCHASTIC_IN_POPULATION: bool = True   # mini-cohorte annexe, mono (voir N_MICE plus bas)
+    PLOT_STOCHASTIC_IN_POPULATION: bool = False  # mini-cohorte annexe, mono (voir N_MICE plus bas) —
+    # desactive par defaut : son moteur (simulate_mouse_and_get_session_perf) construit sa souris
+    # via Mouse() nu, sans passer par _build_mouse/SimConfig (cost, lick_thrs, nogo_tau_max,
+    # nogo_streak_incr, learning_nogo_gain, stim_gain_noreward_active y restent a leurs defauts
+    # de dataclass, differents des valeurs SimConfig utilisees partout ailleurs).
     PLOT_RPE_ALL: bool = True                    # RPE par lick (rpe/)
     PLOT_ABS_RPE_ALL: bool = True                # |RPE| par lick (rpe/)
     PLOT_PSYCHO_TEST: bool = True                # courbe psychometrique sur WDT_TEST (psychometric/)
