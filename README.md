@@ -79,12 +79,14 @@ déclenchement ne compte que les bouts qui tombent dans la fenêtre de réponse 
 le léchage spontané entre les essais, donc il ne s'active quasiment jamais avant qu'un vrai
 désapprentissage soit en cours.
 
-En pratique, avec un désapprentissage par défaut (`DELEARNING_FROM_SESSION`), ce mécanisme ne
-se déclenche presque jamais non plus : le streak plafonne typiquement à 3 sans jamais atteindre
-4, parce que le noyau rapide de non-récompense de E_go (tau ~4s) pousse la souris à arrêter de
-lécher avant qu'un 4e échec consécutif ne soit compté. La sensibilisation reste donc un
-mécanisme présent dans le code mais quasi inactif dans les scénarios simulés jusqu'ici — à
-garder en tête avant de la présenter comme un mécanisme réellement à l'œuvre.
+En pratique, avec un désapprentissage par défaut (`DELEARNING_FROM_SESSION=6`), ce mécanisme se
+déclenche bel et bien, plusieurs fois par session (vérifié en trackant directement le changement
+de `tau_nogo`/`gain_nogo`, pas seulement la valeur de `nogo_streak_cnt` — qui se remet à 0 dans
+le *même* appel qui atteint le seuil, donc invisible si on ne regarde que sa valeur après coup).
+Sur un run type : `tau_nogo` reste à 8.0 pendant WDT1-5 (mécanisme inerte hors désapprentissage,
+comme attendu), puis grimpe à 21 dès WDT6, 28 en WDT7, 32 en WDT8, pour finir à ~39 en WDT10 ;
+`gain_nogo` sature à son plafond (`NOGO_GAIN_MAX=0.6`) dès WDT9. La sensibilisation est donc un
+contributeur réel et significatif à la profondeur de l'extinction, pas un mécanisme dormant.
 
 ## Le gain de stimulus, et pourquoi il doit aussi pouvoir baisser
 
