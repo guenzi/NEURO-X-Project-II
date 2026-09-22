@@ -1,35 +1,36 @@
-# Modèle de souris virtuelle — état actuel
+# Virtual mouse model
 
-Simulation d'une souris qui apprend une tâche de détection (Whisker Detection Task, WDT) par
-renforcement. Le but est de reproduire les courbes d'apprentissage, l'effet du bruit, le
-désapprentissage/réapprentissage et la variabilité inter-individus qu'on observe chez de
-vraies souris, avec un modèle simple (Expectation + décision seuillée).
+Simulation of a mouse learning a detection task (Whisker Detection Task, WDT) through
+reinforcement. The goal is to reproduce learning curves, the effect of noise,
+delearning/relearning, and inter-individual variability observed in real mice, with a
+simple model (Expectation + thresholded decision).
 
-## Déroulement d'une simulation
+## Structure of a simulation
 
-Une simulation tourne bin par bin (0.1s par défaut, voir `SessionBaseInfo`) sur une suite de
-sessions :
+A simulation runs bin by bin (0.1s by default, see `SessionBaseInfo`) over a sequence of
+sessions:
 
-1. **Free Licking 1 (FL1)** — la souris n'a encore aucune notion de la tâche. Elle lèche au
-   hasard (bruit) ; à un temps fixe (500s), une récompense est donnée de force même sans lick,
-   pour lui apprendre que le lick peut payer.
-2. **Free Licking 2 (FL2)** — plus de récompense forcée, seulement des licks spontanés
-   récompensés selon probabilité. Sert à consolider ce que FL1 a amorcé.
-3. **WDT1 à WDT10** — les vraies sessions d'entraînement. Chaque essai présente soit un
-   stimulus (à détecter en léchant dans une fenêtre de réponse), soit un catch (rien, ne pas
-   lécher). C'est sur ces sessions que la courbe d'apprentissage se construit.
-4. **WDT_TEST** — une session finale à plusieurs amplitudes de stimulus (au lieu d'une seule),
-   pour tracer une courbe psychométrique (Hit Rate en fonction de l'amplitude) sur une souris
-   déjà entraînée. Absente en whisker/auditif, qui a son propre mécanisme de sonde (le switch
-   de contingence, voir plus bas).
+1. **Free Licking 1 (FL1)** — the mouse has no notion of the task yet. It licks at
+   random (noise); at a fixed time (500s), a reward is forced even without a lick,
+   to teach it that licking can pay off.
+2. **Free Licking 2 (FL2)** — no more forced reward, only spontaneous licks rewarded
+   according to probability. Consolidates what FL1 started.
+3. **WDT1 through WDT10** — the actual training sessions. Each trial presents either a
+   stimulus (to be detected by licking within a response window) or a catch (nothing,
+   don't lick). This is where the learning curve is built.
+4. **WDT_TEST** — a final session with several stimulus amplitudes (instead of a single
+   one), to trace a psychometric curve (Hit Rate as a function of amplitude) on an
+   already-trained mouse. Absent in whisker/auditory, which has its own probe mechanism
+   (the contingency switch, see below).
 
-L'Expectation, l'Uncertainty et la voie No-Go (voir plus bas) persistent d'une session à
-l'autre : chaque nouvelle session démarre avec l'état final de la précédente, pas de zéro.
+Expectation, Uncertainty, and the No-Go pathway (see below) persist from one session to
+the next: each new session starts with the final state of the previous one, not from
+zero.
 
-## La décision de lécher
+## The decision to lick
 
-À chaque bin, la souris peut émettre un lick. La règle est la même dans les trois modes
-(mono, dual, whisker/auditif) :
+At each bin, the mouse can emit a lick. The rule is the same across all three modes
+(mono, dual, whisker/auditory):
 
 $$
 E = E_{go} - E_{nogo}
@@ -40,203 +41,205 @@ D = \left[ \frac{E}{1 + e^{A(U-U_0)}} + \frac{N_d}{1 + e^{-A(U-U_0)}} \right] \t
 $$
 
 $$
-\text{lick si } D \geq \text{seuil}
+\text{lick if } D \geq \text{threshold}
 $$
 
-- **E_go** est l'expectation de récompense (dans [0, 1]), le signal appris ; **E_nogo** est la
-  voie d'inhibition (voir plus bas) — c'est toujours leur différence E qui entre dans la
-  décision, jamais E_go seule.
-- **N_d** est un bruit Gamma, indépendant de l'expectation.
-- **U** (Uncertainty) pilote le compromis entre les deux termes : quand U est bas (souris
-  confiante, pas de surprise récente), E domine largement ; quand U est haut (surprises
-  récentes, extinction en cours...), le bruit prend le relais et la souris explore davantage.
-- **U_0** (`uncertainty_offset`) est le point neutre de ce compromis : à U = U_0, les deux
-  termes pèsent 50/50. En dessous, E domine ; au-dessus, le bruit domine.
-- **V·M − C** est un gate multiplicatif : V (valeur de la récompense) et C (coût du lick) sont
-  fixés par défaut, M (motivation) décroît à chaque récompense confirmée au cours d'une
-  session — c'est l'effet de satiété intra-session (voir plus bas).
+- **E_go** is the reward expectation (in [0, 1]), the learned signal; **E_nogo** is the
+  inhibition pathway (see below) — it is always their difference E that enters the
+  decision, never E_go alone.
+- **N_d** is Gamma noise, independent of expectation.
+- **U** (Uncertainty) drives the trade-off between the two terms: when U is low
+  (confident mouse, no recent surprise), E dominates strongly; when U is high (recent
+  surprises, extinction underway...), noise takes over and the mouse explores more.
+- **U_0** (`uncertainty_offset`) is the neutral point of this trade-off: at U = U_0, the
+  two terms weigh 50/50. Below it, E dominates; above it, noise dominates.
+- **V·M − C** is a multiplicative gate: V (reward value) and C (cost of licking) are
+  fixed by default, M (motivation) decreases with each confirmed reward over the course
+  of a session — this is the intra-session satiety effect (see below).
 
-## Architecture Go/No-Go
+## Go/No-Go architecture
 
-En plus de E_go (qui monte à la récompense, tau très long ~2000s, quasi permanent, et
-redescend vite à chaque lick non récompensé, tau ~4s), une seconde voie **E_nogo** accumule
-un signal d'inhibition, plus lent et plus persistant. La décision utilise **E_go − E_nogo**
-au lieu de E_go seule.
+In addition to E_go (which rises on reward, with a very long tau ~2000s, near-permanent,
+and drops quickly on each unrewarded lick, tau ~4s), a second pathway **E_nogo**
+accumulates an inhibition signal, slower and more persistent. The decision uses
+**E_go − E_nogo** instead of E_go alone.
 
-E_nogo se comporte comme une récurrence (recalculée à chaque bin à partir de sa propre valeur
-au bin précédent), pas comme une injection de noyau futur : au début de chaque bout de lick
-non récompensé (pas à chaque bin d'un même bout, seulement au premier), elle reçoit un kick
-saturant `gain·(1 − E_nogo)`. À chaque récompense confirmée, une fraction (`nogo_relief`) de
-la méfiance déjà accumulée est effacée — c'est ce qui permet une réacquisition rapide après
-une extinction.
+E_nogo behaves as a recurrence (recomputed at each bin from its own value at the
+previous bin), not as an injection of a future kernel: at the start of each unrewarded
+lick bout (not at every bin of the same bout, only the first), it receives a saturating
+kick `gain·(1 − E_nogo)`. On each confirmed reward, a fraction (`nogo_relief`) of the
+already-accumulated distrust is wiped out — this is what allows fast reacquisition
+after extinction.
 
-**Sensibilisation** : après une série de bouts non récompensés consécutifs *dans un essai*
-(4 par défaut, `NOGO_STREAK_THRESHOLD`), le tau **et** le gain de E_nogo grandissent tous les
-deux — le tau la rend plus persistante, le gain la rend plus réactive au bout suivant. Les
-deux ensemble (plutôt que l'un ou l'autre seul) donnent la suppression la plus profonde
-pendant une extinction prolongée, sans rien changer à l'apprentissage normal : ce
-déclenchement ne compte que les bouts qui tombent dans la fenêtre de réponse d'un essai, pas
-le léchage spontané entre les essais, donc il ne s'active quasiment jamais avant qu'un vrai
-désapprentissage soit en cours.
+**Sensitization**: after a series of consecutive unrewarded bouts *within a trial*
+(4 by default, `NOGO_STREAK_THRESHOLD`), both the tau **and** the gain of E_nogo grow
+— the tau makes it more persistent, the gain makes it more reactive to the next bout.
+The two together (rather than either alone) give the deepest suppression during
+prolonged extinction, without changing anything about normal learning: this trigger only
+counts bouts that fall within a trial's response window, not spontaneous licking between
+trials, so it almost never activates before a real delearning is underway.
 
-En pratique, avec un désapprentissage par défaut (`DELEARNING_FROM_SESSION=6`), ce mécanisme se
-déclenche bel et bien, plusieurs fois par session (vérifié en trackant directement le changement
-de `tau_nogo`/`gain_nogo`, pas seulement la valeur de `nogo_streak_cnt` — qui se remet à 0 dans
-le *même* appel qui atteint le seuil, donc invisible si on ne regarde que sa valeur après coup).
-Sur un run type : `tau_nogo` reste à 8.0 pendant WDT1-5 (mécanisme inerte hors désapprentissage,
-comme attendu), puis grimpe à 21 dès WDT6, 28 en WDT7, 32 en WDT8, pour finir à ~39 en WDT10 ;
-`gain_nogo` sature à son plafond (`NOGO_GAIN_MAX=0.6`) dès WDT9. La sensibilisation est donc un
-contributeur réel et significatif à la profondeur de l'extinction, pas un mécanisme dormant.
+In practice, with a default delearning setup (`DELEARNING_FROM_SESSION=6`), this
+mechanism does fire, repeatedly within a session (verified by directly tracking the
+change in `tau_nogo`/`gain_nogo`, not just the value of `nogo_streak_cnt` — which resets
+to 0 within the *same* call that reaches the threshold, so it is invisible if you only
+look at its value afterwards). On a typical run: `tau_nogo` stays at 8.0 through WDT1-5
+(inert outside delearning, as expected), then climbs to 21 as early as WDT6, 28 at WDT7,
+32 at WDT8, ending around ~39 at WDT10; `gain_nogo` saturates at its ceiling
+(`NOGO_GAIN_MAX=0.6`) as early as WDT9. Sensitization is therefore a real and
+significant contributor to the depth of extinction, not a dormant mechanism.
 
-## Le gain de stimulus, et pourquoi il doit aussi pouvoir baisser
+## Stimulus gain, and why it must also be able to decrease
 
-Quand un stimulus est présenté, il injecte un boost anticipatoire dans E_go, proportionnel à
-un **gain de stimulus** appris (mono : `exp_update_stim[1]` ; dual : `stim_gain_right/left` ;
-whisker/auditif : `exp_update_stim1_wa/2_wa`). Ce gain grandit à chaque récompense confirmée
-(règle delta sur le RPE).
+When a stimulus is presented, it injects an anticipatory boost into E_go, proportional
+to a learned **stimulus gain** (mono: `exp_update_stim[1]`; dual: `stim_gain_right/left`;
+whisker/auditory: `exp_update_stim1_wa/2_wa`). This gain grows with each confirmed
+reward (delta rule on RPE).
 
-Sans mécanisme de baisse, ce gain reste figé à sa valeur apprise une fois haute et continue
-d'injecter le même boost même en pleine extinction — ce qui freine la profondeur de
-l'extinction observable, indépendamment de ce que fait déjà la voie No-Go. Le modèle gère
-ça différemment selon le mode :
+Without a mechanism for it to decrease, this gain would stay frozen at its learned value
+once high and keep injecting the same boost even in the middle of extinction — which
+would limit the observable depth of extinction, independently of what the No-Go pathway
+already does. The model handles this differently depending on the mode:
 
-- **Mono/dual** (`Mouse.stim_gain_noreward_active`) : le gain baisse, avec exactement la même
-  règle delta que sa montée, mais UNIQUEMENT quand un lick correct (bon côté, dans la fenêtre
-  de réponse, après le cooldown de 2s post-récompense) n'est pas récompensé parce que le
-  tirage de probabilité de récompense a échoué. Avec `reward_prob=1.0` (comportement normal
-  hors désapprentissage cible), ce tirage ne peut structurellement jamais échouer — le
-  mécanisme reste donc totalement inerte tant qu'aucun désapprentissage n'est en cours, et ne
-  se déclenche jamais sur un simple mismatch (mauvais côté) ou sur le cooldown à lui seul.
-- **Whisker/auditif** : toujours actif (pas optionnel), parce que ce paradigme a en
-  permanence un stimulus "faux" (celui qui n'est plus récompensé après le switch de
-  contingence) — le gain de ce stimulus redescend directement dès qu'un lick dessus n'est pas
-  récompensé, sans tirage de probabilité : c'est certain dès que le mauvais stimulus est
-  présenté.
+- **Mono/dual** (`Mouse.stim_gain_noreward_active`): the gain decreases, with exactly
+  the same delta rule as its rise, but ONLY when a correct lick (right side, within the
+  response window, after the 2s post-reward cooldown) is not rewarded because the reward
+  probability draw failed. With `reward_prob=1.0` (normal behavior outside of targeted
+  delearning), this draw can structurally never fail — the mechanism therefore stays
+  entirely inert as long as no delearning is underway, and never triggers on a simple
+  mismatch (wrong side) or on the cooldown alone.
+- **Whisker/auditory**: always active (not optional), because this paradigm always has
+  a "wrong" stimulus present (the one no longer rewarded after the contingency switch)
+  — the gain of that stimulus decreases directly as soon as a lick on it is not
+  rewarded, with no probability draw: it is certain as soon as the wrong stimulus is
+  presented.
 
-## Les trois modes
+## The three modes
 
 ### Mono-stimulus (`dual_stim=False`, `WHISKER_AUD_STIM=False`)
 
-Un seul stimulus, une seule Expectation E_go, une seule voie E_nogo. Le modèle de base, celui
-sur lequel les deux autres modes ont été construits sans rien y changer.
+A single stimulus, a single Expectation E_go, a single E_nogo pathway. The base model,
+the one the other two modes were built on without changing anything in it.
 
-### Dual gauche/droite (`dual_stim=True`)
+### Dual left/right (`dual_stim=True`)
 
-Deux stimuli, chacun menant à une récompense d'un côté différent. Deux Expectations
-complètement indépendantes E_droite/E_gauche (chacune se comporte exactement comme
-l'Expectation mono, mêmes règles de mise à jour), et deux voies E_nogo indépendantes.
+Two stimuli, each leading to a reward on a different side. Two fully independent
+Expectations E_right/E_left (each behaves exactly like the mono Expectation, same
+update rules), and two independent E_nogo pathways.
 
-Le choix du côté ne compare pas directement E_droite et E_gauche : un bruit Gumbel
-indépendant est ajouté à chacune, et le côté retenu est celui de la plus grande valeur
-bruitée (*Gumbel-max trick*). C'est l'équivalent statistique exact d'une sigmoïde sur
-`E_droite − E_gauche`, mais le bruit vit sur les deux représentations plutôt que d'être
-injecté au moment de la comparaison (comme dans Lak et al. 2020) — même quand un côté est
-très confiant, il reste toujours une probabilité résiduelle de lire l'autre.
+Side selection does not directly compare E_right and E_left: independent Gumbel noise
+is added to each, and the chosen side is the one with the larger noisy value
+(*Gumbel-max trick*). This is the exact statistical equivalent of a sigmoid over
+`E_right − E_left`, but the noise lives on both representations rather than being
+injected at the moment of comparison (as in Lak et al. 2020) — even when one side is
+very confident, there is always a residual probability of reading the other.
 
-Deux effets supplémentaires, spécifiques au dual :
+Two additional effects, specific to dual:
 
-- **`cross_stim_gain`** : un stimulus d'un côté pousse aussi (faiblement) l'Expectation du
-  côté opposé, pour simuler qu'une souris naïve ne discrimine pas parfaitement les deux
-  stimuli au début. Ce poids relatif diminue tout seul avec l'entraînement puisque les gains
-  propres grandissent alors que celui-ci reste fixe.
-- **`stim_gain_noreward_active`** : voir section précédente.
+- **`cross_stim_gain`**: a stimulus on one side also (weakly) pushes the Expectation of
+  the opposite side, to simulate that a naive mouse does not perfectly discriminate the
+  two stimuli at first. This relative weight decreases on its own with training since
+  the sides' own gains grow while this term stays fixed.
+- **`stim_gain_noreward_active`**: see previous section.
 
-### Whisker/auditif (`WHISKER_AUD_STIM=True`, prioritaire sur `dual_stim` si les deux sont actives par erreur)
+### Whisker/auditory (`WHISKER_AUD_STIM=True`, takes priority over `dual_stim` if both
+are active by mistake)
 
-Deux stimuli (whisker et auditif) mais **une seule** Expectation partagée (comme en mono),
-chacun avec son propre gain d'anticipation. Le stimulus récompensé change en cours
-d'entraînement (`WA_SWITCH_SESSION`, par défaut à la session 6) — avant, whisker est
-récompensé et auditif ne l'est jamais ; après, l'inverse. C'est ce switch de contingence qui
-sert de sonde comportementale (pas de WDT_TEST séparé ici).
+Two stimuli (whisker and auditory) but **a single** shared Expectation (as in mono),
+each with its own anticipatory gain. The rewarded stimulus switches partway through
+training (`WA_SWITCH_SESSION`, session 6 by default) — before it, whisker is rewarded
+and auditory never is; after it, the reverse. This contingency switch is what serves as
+the behavioral probe (no separate WDT_TEST here).
 
-La décision de lécher réutilise directement la fonction mono (une seule Expectation partagée,
-donc une seule voie E_nogo partagée elle aussi — pas une par stimulus). Il n'y a pas de voie
-No-Go compétitrice séparée par stimulus : c'est le gain de chaque stimulus qui descend
-directement (voir section précédente, même principe que `stim_gain_noreward_active`, mais
-déclenché par le switch de contingence plutôt que par un tirage de probabilité refusé).
+The licking decision directly reuses the mono function (a single shared Expectation, so
+a single shared E_nogo pathway too — not one per stimulus). There is no separate
+competing No-Go pathway per stimulus: it is each stimulus's gain that decreases directly
+(see previous section, same principle as `stim_gain_noreward_active`, but triggered by
+the contingency switch rather than a refused probability draw).
 
-## Désapprentissage et réapprentissage
+## Delearning and relearning
 
-Pas un scénario à part : n'importe quel run mono ou dual peut intégrer un désapprentissage en
-renseignant `DELEARNING_FROM_SESSION` (ex. 6 : plus aucune récompense à partir de WDT6,
-jusqu'à la fin de l'entraînement WDT). En dual, `DELEARNING_SIDE` (+1 droite, -1 gauche) peut
-cibler un seul côté, l'autre continuant normalement. `DELEARNING_UNTIL_SESSION` restaure la
-récompense à partir d'une session donnée (réapprentissage) au lieu de laisser l'extinction
-durer jusqu'à la fin.
+Not a separate scenario: any mono or dual run can incorporate delearning by setting
+`DELEARNING_FROM_SESSION` (e.g. 6: no more reward from WDT6 onward, until the end of WDT
+training). In dual, `DELEARNING_SIDE` (+1 right, -1 left) can target a single side, with
+the other continuing normally. `DELEARNING_UNTIL_SESSION` restores reward from a given
+session onward (relearning) instead of letting extinction last until the end.
 
-Dès que `DELEARNING_FROM_SESSION` est renseigné, trois plots de diagnostic supplémentaires
-sont générés (dossier `delearning/`) : Hit Rate par essai autour des transitions, E_go vs
-E_nogo dans le temps, et Hit Rate moyen par session en barres colorées par phase.
+As soon as `DELEARNING_FROM_SESSION` is set, three additional diagnostic plots are
+generated (`delearning/` folder): Hit Rate per trial around the transitions, E_go vs
+E_nogo over time, and average Hit Rate per session as bars colored by phase.
 
-Le whisker/auditif n'a pas cette option : son switch de contingence sert déjà de mécanisme
-d'extinction/réapprentissage intrinsèque au paradigme.
+Whisker/auditory does not have this option: its contingency switch already serves as an
+extinction/relearning mechanism intrinsic to the paradigm.
 
-## Simulation de population
+## Population simulation
 
-Deux mécanismes distincts, à ne pas confondre :
+Two distinct mechanisms, not to be confused:
 
-- **`POPULATION_RANGE=True`** (mode principal, mono et dual) : remplace tout le run normal
-  par `run_population()`, qui simule `POPULATION_N_MICE` souris indépendantes (leur
-  `learning_stim` et l'échelle de leur bruit sont tirées uniformément à
-  ±`POPULATION_PARAM_SPREAD` autour des valeurs de base) et ne produit que des plots
-  comparatifs — pas de traces individuelles. Avec `POPULATION_SPREAD_SWEEP=True`, le run se
-  répète pour chaque pourcentage de `POPULATION_SWEEP_VALUES` (0/10/20/30/40/50% par défaut),
-  chacun dans son propre sous-dossier `population/p{pourcentage}/`.
-- **`PLOT_STOCHASTIC_IN_POPULATION`** (mono uniquement, **désactivé par défaut**, annexe à un
-  run normal) : si activé, relance à la fin d'un run mono normal une petite cohorte
-  indépendante (`N_MICE`/`NOISE_GAIN`/`LEARNING_STIM`/`SESSION_NAME`), plus simple que le mode
-  population complet, juste pour visualiser la variabilité Hit Rate/False Alarm sur une session
-  donnée. Désactivé par défaut car son moteur (`simulate_mouse_and_get_session_perf`) construit
-  sa souris via `Mouse()` nu, sans passer par `_build_mouse`/`SimConfig` — plusieurs paramètres
-  (coût, seuils de lick, bloc No-Go/sensibilisation) y diffèrent donc de ceux utilisés partout
-  ailleurs dans le projet.
+- **`POPULATION_RANGE=True`** (main mode, mono and dual): replaces the entire normal run
+  with `run_population()`, which simulates `POPULATION_N_MICE` independent mice (their
+  `learning_stim` and the scale of their noise are drawn uniformly within
+  ±`POPULATION_PARAM_SPREAD` around the base values) and only produces comparative
+  plots — no individual traces. With `POPULATION_SPREAD_SWEEP=True`, the run repeats for
+  each percentage in `POPULATION_SWEEP_VALUES` (0/10/20/30/40/50% by default), each in
+  its own `population/p{percentage}/` subfolder.
+- **`PLOT_STOCHASTIC_IN_POPULATION`** (mono only, **disabled by default**, an add-on to
+  a normal run): if enabled, at the end of a normal mono run it reruns a small
+  independent cohort (`N_MICE`/`NOISE_GAIN`/`LEARNING_STIM`/`SESSION_NAME`), simpler than
+  the full population mode, just to visualize Hit Rate/False Alarm variability on a given
+  session. Disabled by default because its engine
+  (`simulate_mouse_and_get_session_perf`) builds its mouse via a bare `Mouse()`, without
+  going through `_build_mouse`/`SimConfig` — several parameters (cost, lick thresholds,
+  No-Go/sensitization block) are left at their dataclass defaults there, different from
+  the values used everywhere else in the project.
 
-## Effet de la Motivation intra-session
+## Effect of intra-session Motivation
 
-Le Hit Rate brut plafonne souvent en dessous de ce que E_go a réellement appris, parce que la
-Motivation (M) diminue à chaque récompense confirmée au fil d'une session — le gate `V·M − C`
-rétrécit progressivement, jusqu'à ce que seule une Expectation proche du maximum reste
-au-dessus du seuil de lick. Ce n'est pas un défaut d'apprentissage mais un effet de satiété.
+The raw Hit Rate often plateaus below what E_go has actually learned, because Motivation
+(M) decreases with each confirmed reward over the course of a session — the `V·M − C`
+gate progressively shrinks, until only an Expectation close to its maximum stays above
+the lick threshold. This is not a learning deficit but a satiety effect.
 
-Pour isoler la performance "pure" de cet effet, chaque essai est recalculé comme si M était
-resté à 1.0 toute la session (`D_norm = D · (V−C)/(V·M−C)`, comparé au même seuil) — ce plot
-normalisé est généré automatiquement sur tous les runs, mono comme dual, population ou non.
+To isolate the "pure" performance from this effect, each trial is recomputed as if M had
+stayed at 1.0 for the whole session (`D_norm = D · (V−C)/(V·M−C)`, compared to the same
+threshold) — this normalized plot is generated automatically on every run, mono as well
+as dual, population or not.
 
-## Fichiers
+## Files
 
-- **`models.py`** — toutes les structures de données : `Mouse` (paramètres et gains appris),
-  `SimConfig` (tous les réglages d'un run), les classes de session (params/state) pour FL, WDT
-  et leurs équivalents dual/whisker-auditif.
-- **`functions.py`** — toute la logique de simulation (une fonction par bin de décision/mise à
-  jour) et les fonctions d'orchestration appelées par `main.py` (une par mode et par type de
-  session).
-- **`plotting.py`** — tous les plots (traces, courbes d'apprentissage, diagnostics de
-  désapprentissage, population...) et la gestion du dossier de sortie `results/`.
-- **`main.py`** — construit un `SimConfig` et appelle la bonne fonction d'orchestration selon
-  ses flags. Voir le tableau de scénarios en tête du fichier pour les combinaisons courantes
-  (mono/dual/whisker-auditif, avec ou sans désapprentissage, avec ou sans population).
+- **`models.py`** — all data structures: `Mouse` (parameters and learned gains),
+  `SimConfig` (all the settings for a run), the session classes (params/state) for FL,
+  WDT, and their dual/whisker-auditory equivalents.
+- **`functions.py`** — all the simulation logic (one function per decision/update bin)
+  and the orchestration functions called by `main.py` (one per mode and session type).
+- **`plotting.py`** — all the plots (traces, learning curves, delearning diagnostics,
+  population...) and management of the `results/` output folder.
+- **`main.py`** — builds a `SimConfig` and calls the right orchestration function based
+  on its flags. See the scenario table at the top of the file for common combinations
+  (mono/dual/whisker-auditory, with or without delearning, with or without population).
 
-## Résultats
+## Results
 
-Chaque run crée un dossier `results/{date}_{heure}_{mode}[_delearnFrom{N}[_{côté}]][_until{M}]/`
-(mono/dual/whiskAud selon le mode, suffixe de désapprentissage si actif), avec un
-sous-dossier par catégorie de plot (`traces/`, `block_rates/`, `learning_curve/`,
-`session_summary/`, `rpe/`, `psychometric/`, `delearning/`, `population/`) et, si
-`SAVE_PARAMETERS_TXT` est actif, un `parameters.txt` listant tous les paramètres du run.
+Each run creates a folder `results/{date}_{time}_{mode}[_delearnFrom{N}[_{side}]][_until{M}]/`
+(mono/dual/whiskAud depending on the mode, delearning suffix if active), with a
+subfolder per plot category (`traces/`, `block_rates/`, `learning_curve/`,
+`session_summary/`, `rpe/`, `psychometric/`, `delearning/`, `population/`) and, if
+`SAVE_PARAMETERS_TXT` is active, a `parameters.txt` listing every parameter of the run.
 
-## Environnement
+## Environment
 
-L'environnement conda est défini dans `bio482.yml` : Python 3.11, numpy, matplotlib, scipy. 
+The conda environment is defined in `bio482.yml`: Python 3.11, numpy, matplotlib, scipy.
 
 ```bash
 conda env create -f bio482.yml
 conda activate bio482
 ```
-Ensuite séléctionner le Python Interpreter dans la barre de recherche quand vous êtes dans le fichier. Barre de recherche -> Cmd + P -> Python: Select Interpreter -> bio482.
+Then select the Python Interpreter in the search bar while in the file. Search bar ->
+Cmd + P -> Python: Select Interpreter -> bio482.
 
-## Exemple de run
+## Example run
 
-Le cas le plus simple : mono-stimulus, réglages par défaut.
+The simplest case: mono-stimulus, default settings.
 
 ```python
 from models import SimConfig
@@ -253,4 +256,4 @@ wdt_test = run_wdt_test(mouse, session_info, config, wdt_bundle)
 plot_all_results(session_info, mouse, config, log_fl1, log_fl2, wdt_bundle, wdt_test)
 ```
 
-Les résultats (plots + `parameters.txt`) sont écrits dans `results/{date}_{heure}_mono/`.
+Results (plots + `parameters.txt`) are written to `results/{date}_{time}_mono/`.
