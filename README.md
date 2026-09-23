@@ -129,10 +129,11 @@ update rules), and two independent E_nogo pathways.
 
 Side selection does not directly compare E_right and E_left: independent Gumbel noise
 is added to each, and the chosen side is the one with the larger noisy value
-(*Gumbel-max trick*). This is the exact statistical equivalent of a sigmoid over
-`E_right − E_left`, but the noise lives on both representations rather than being
-injected at the moment of comparison (as in Lak et al. 2020) — even when one side is
-very confident, there is always a residual probability of reading the other.
+(*Gumbel-max trick*) — the exact statistical equivalent of a softmax/logistic choice
+rule over `E_right − E_left` (a standard way to introduce stochastic choice between two
+options), but with the noise living separately on each representation rather than being
+injected directly at the comparison step — even when one side is very confident, there
+is always a residual probability of reading the other.
 
 Two additional effects, specific to dual:
 
